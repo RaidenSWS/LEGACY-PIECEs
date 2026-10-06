@@ -50,9 +50,9 @@ local State = {
     UnlockEnabled = false,
     AutoPickupEnabled = false,
     BossFarmEnabled = false,
-    AutoSummonBoss = true,
+    AutoSummonBoss = false,
     PrestigeBossAutoTarget = false,
-    AutoStatEnabled = true,
+    AutoStatEnabled = false,
     StatusRefreshEnabled = false,
     SelectedQuest = nil,
     FarmCombatType = "Ability",
@@ -66,7 +66,6 @@ local State = {
     SafeTravel = false,
     AbilityFlight = true,
     PullBackPause = false,
-    AutoDodge = true,
     MaxHopDistance = 180,
     PickupRange = 1200,
     StatPriority = { "Weapon", "Ability", "Strength", "Defense" },
@@ -84,7 +83,7 @@ local State = {
     AutoChestEnabled = false,
     ChestSelection = {},
     ChestStatus = "Idle",
-    AutoBuyBossTicket = true,
+    AutoBuyBossTicket = false,
     PickupTargets = {},
     DungeonAutoDifficulty = false,
     DungeonDifficulty = "Hard",
@@ -94,6 +93,9 @@ local State = {
     FishStatus = "Idle",
     AutoDeepsharkEnabled = false,
     AutoArayaEnabled = false,
+    AutoTwohEnabled = false,
+    AutoDungeonEnabled = false,
+    AutoDungeonTarget = "Realm Beyond Heaven (TWOH)",
     AutoBankaiEnabled = false,
     AutoSolemnEnabled = false,
     AutoTraitEnabled = false,
@@ -116,6 +118,7 @@ local State = {
 }
 
 getgenv().HubState = State
+getgenv().HubSessionToken = {}
 
 if getgenv().HubCleanup then
     pcall(getgenv().HubCleanup)
@@ -160,7 +163,14 @@ pcall(function()
                 return
             end
             if kind == "Function" then
-                local owner, _, _, skillKey, phase = ...
+                local owner, _, info, skillKey, phase, duration = ...
+                if skillKey == "F" and typeof(owner) == "Instance" and owner.Name == localPlayer.Name and typeof(info) == "table" and tostring(info.Module) == "The World" then
+                    if phase == "Stop" then
+                        State.TwohZaWarudoUntil = os.clock() + (tonumber(duration) or 9)
+                    elseif phase == "Resume" then
+                        State.TwohZaWarudoUntil = nil
+                    end
+                end
                 if (owner == localPlayer or owner == localPlayer.Character) and typeof(skillKey) == "string" and #skillKey <= 2 and phase == nil then
                     State.SkillCasting[skillKey] = os.clock()
                     State.LastSkillStart = os.clock()
@@ -183,6 +193,11 @@ pcall(function()
                 if parts[1] == "Obtain" and parts[2] then
                     State.LastObtain = parts[2]
                     State.LastObtainTime = os.clock()
+                    local runDrops = State.TwohRunDrops
+                    if runDrops and runDrops.Watch[parts[2]] then
+                        local amount = tonumber((select(3, ...))) or 1
+                        runDrops.Items[parts[2]] = (runDrops.Items[parts[2]] or 0) + amount
+                    end
                 end
                 if parts[1] == "WorldBoss" and parts[2] then
                     State.LastWorldBoss = {
@@ -240,7 +255,11 @@ local Combat = {
     AwakenBackoffUntil = 0,
     SkillRules = {
         Ichigo = { F = "awakened" },
-        Tatsumaki = { F = "never" }
+        Tatsumaki = { F = "never" },
+        ["Solemn Lament"] = { F = "reload" }
+    },
+    AmmoRules = {
+        ["Solemn Lament"] = { Attributes = { "SolemnLamentLivingAmmo", "SolemnLamentDepartedAmmo" }, ReloadAt = 2, FormAttribute = "SolemnLamentForm" }
     },
     AwakenSkills = {
         Ichigo = { Key = "B", Unlocked = "IchigoBankaiUnlocked", Active = "IchigoBankai", ReadyAt = "IchigoBankaiReadyAt", MaxCooldown = 300 }
@@ -263,10 +282,19 @@ local lastBossAlert = nil
 local npcCooldownUntil = {}
 local mobAnchorCache = {}
 
-local statCap = 7000
 local statNames = { "Strength", "Defense", "Weapon", "Ability" }
+local StatMeta = {
+    FallbackCap = 7000,
+    Display = { Strength = "Style", Defense = "Defense", Weapon = "Weapon", Ability = "Ability" },
+    Options = {},
+    FromDisplay = {},
+    Allocating = false,
+    PrestigeData = nil
+}
 local statLookup = {}
 for _, statName in ipairs(statNames) do
+    table.insert(StatMeta.Options, StatMeta.Display[statName])
+    StatMeta.FromDisplay[StatMeta.Display[statName]] = statName
     statLookup[statName] = true
 end
 
@@ -335,7 +363,11 @@ for _, group in ipairs(bossCatalogGroups) do
 end
 
 local function isFarmActive()
-    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or State.PrestigeEnabled or pickupActive or prestigeActive or debugActive or State.AutoWhaleEnabled or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or State.AutoDeepsharkEnabled or State.AutoArayaEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or (State.AutoFishEnabled and movementOwner == "fishing")
+    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or pickupActive or prestigeActive or debugActive or (State.AutoWhaleEnabled and Extras.WhaleActive == true) or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or (State.AutoDeepsharkEnabled and movementOwner == "deepshark") or State.AutoArayaEnabled or State.AutoTwohEnabled or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or (State.AutoFishEnabled and movementOwner == "fishing")
+end
+
+function Extras.otherFarmActive()
+    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or State.AutoArayaEnabled or (State.AutoTwohEnabled and not (Extras.Twoh and Extras.Twoh.Idle)) or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or false
 end
 
 local movementOwnerActiveCheck = {
@@ -375,11 +407,17 @@ local movementOwnerActiveCheck = {
     ambushonly = function()
         return State.AutoAmbushOnlyEnabled
     end,
+    dungeon = function()
+        return State.AutoDungeonEnabled
+    end,
     deepshark = function()
         return State.AutoDeepsharkEnabled
     end,
     araya = function()
         return State.AutoArayaEnabled
+    end,
+    twoh = function()
+        return State.AutoTwohEnabled or (Extras.Twoh ~= nil and Extras.Twoh.isActive())
     end,
     bankai = function()
         return State.AutoBankaiEnabled
@@ -404,6 +442,10 @@ local function acquireMovement(ownerName)
     end
 
     local eventPriority = Extras.PriorityRequest
+    if eventPriority == "twoh" and not (State.AutoTwohEnabled or (Extras.Twoh ~= nil and Extras.Twoh.isActive())) then
+        Extras.PriorityRequest = nil
+        eventPriority = nil
+    end
     if eventPriority and ownerName ~= eventPriority then
         return false
     end
@@ -413,6 +455,11 @@ local function acquireMovement(ownerName)
     end
 
     if not eventPriority and Prestige.priorityRequest and State.PrestigeEnabled and ownerName ~= "prestige" and ownerName ~= "pickup" then
+        return false
+    end
+
+    if State.AutoDeepsharkEnabled and Extras.DeepsharkRequesters and Extras.DeepsharkRequesters.prestige
+        and (ownerName == "level" or ownerName == "quest" or ownerName == "mob") then
         return false
     end
 
@@ -453,6 +500,8 @@ local function setFarmStatus(message)
         State.ExtraStatus = "Ichigo Bankai: " .. tostring(message)
     elseif movementOwner == "solemn" then
         State.ExtraStatus = "Solemn Lament: " .. tostring(message)
+    elseif movementOwner == "twoh" then
+        Extras.Twoh.status(message)
     elseif movementOwner == "whale" or movementOwner == "coffin" or movementOwner == "ambush" or movementOwner == "ambushonly" or movementOwner == "deepshark" or movementOwner == "araya" or movementOwner == "fireforce" then
         State.ExtraStatus = message
     elseif State.BossFarmEnabled then
@@ -789,20 +838,72 @@ end
 
 buildIslandSpots()
 
+function Extras.aboveWater(targetCFrame)
+    if not targetCFrame then
+        return targetCFrame
+    end
+    if workspaceService:GetAttribute("Dungeon") ~= nil then
+        local floorY = Extras.DungeonFloorLevel
+        if not floorY then
+            return targetCFrame
+        end
+        Extras.DungeonCeiling = floorY + 120
+        local clampedY = math.clamp(targetCFrame.Position.Y, floorY + 3.5, Extras.DungeonCeiling)
+        if clampedY == targetCFrame.Position.Y then
+            return targetCFrame
+        end
+        return CFrame.new(targetCFrame.Position.X, clampedY, targetCFrame.Position.Z) * targetCFrame.Rotation
+    end
+    if targetCFrame.Position.Y >= 3.5 then
+        return targetCFrame
+    end
+    return CFrame.new(targetCFrame.Position.X, 3.5, targetCFrame.Position.Z) * targetCFrame.Rotation
+end
+
+Extras.FloorCache = setmetatable({}, { __mode = "k" })
+
+function Extras.getDungeonFloorY(enemyRoot)
+    if workspaceService:GetAttribute("Dungeon") == nil then
+        return nil
+    end
+    local cached = Extras.FloorCache[enemyRoot]
+    if cached and os.clock() - cached.At < 2 then
+        return cached.Y
+    end
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    raycastParams.FilterDescendantsInstances = { localPlayer.Character, enemiesFolder, npcsFolder, extraFolder }
+    raycastParams.IgnoreWater = true
+    local hit = workspaceService:Raycast(enemyRoot.Position + Vector3.new(0, 2, 0), Vector3.new(0, -200, 0), raycastParams)
+    local floorY = hit and hit.Normal.Y > 0.6 and hit.Position.Y or nil
+    Extras.FloorCache[enemyRoot] = { Y = floorY, At = os.clock() }
+    if floorY then
+        Extras.DungeonFloorLevel = floorY
+    end
+    return floorY
+end
+
 local function getFarmCFrame(enemyRoot)
     local farmDistance = math.clamp(State.FarmDistanceOverride or State.FarmDistance or 7.5, 3, 60)
     local farmPosition = State.FarmPosition or "Above"
+    Extras.getDungeonFloorY(enemyRoot)
 
     if farmPosition == "Behind" then
         local targetPosition = (enemyRoot.CFrame * CFrame.new(0, 1.5, farmDistance)).Position
-        return CFrame.lookAt(targetPosition, enemyRoot.Position)
+        return Extras.aboveWater(CFrame.lookAt(targetPosition, enemyRoot.Position))
     end
 
     if farmPosition == "Below" then
-        return CFrame.new(enemyRoot.Position - Vector3.new(0, farmDistance, 0)) * CFrame.Angles(math.rad(90), 0, 0)
+        local floorY = Extras.getDungeonFloorY(enemyRoot)
+        if floorY and enemyRoot.Position.Y - farmDistance < floorY + 3.5 then
+            local behind = enemyRoot.CFrame.LookVector * -math.min(farmDistance, 15)
+            local standPosition = Vector3.new(enemyRoot.Position.X + behind.X, floorY + 3.5, enemyRoot.Position.Z + behind.Z)
+            return CFrame.lookAt(standPosition, Vector3.new(enemyRoot.Position.X, standPosition.Y, enemyRoot.Position.Z))
+        end
+        return Extras.aboveWater(CFrame.new(enemyRoot.Position - Vector3.new(0, farmDistance, 0)) * CFrame.Angles(math.rad(90), 0, 0))
     end
 
-    return CFrame.new(enemyRoot.Position + Vector3.new(0, farmDistance, 0)) * CFrame.Angles(math.rad(-90), 0, 0)
+    return Extras.aboveWater(CFrame.new(enemyRoot.Position + Vector3.new(0, farmDistance, 0)) * CFrame.Angles(math.rad(-90), 0, 0))
 end
 
 local targetBox = Instance.new("SelectionBox")
@@ -855,6 +956,33 @@ local function removeFloat(rootPart)
             floatForce:Destroy()
         end
     end
+end
+
+function Extras.leaveWater()
+    local rootPart = getRoot()
+    if not rootPart or workspaceService:GetAttribute("Dungeon") ~= nil then
+        return true
+    end
+    if not rootPart:FindFirstChild("Swim") and rootPart.Position.Y > 2 then
+        return true
+    end
+    for _ = 1, 6 do
+        rootPart = getRoot()
+        if not rootPart then
+            return false
+        end
+        rootPart.CFrame = CFrame.new(rootPart.Position.X, 6, rootPart.Position.Z) * rootPart.CFrame.Rotation
+        rootPart.AssemblyLinearVelocity = Vector3.zero
+        getOrCreateFloat(rootPart)
+        local deadline = os.clock() + 0.35
+        while os.clock() < deadline do
+            task.wait()
+            if not rootPart:FindFirstChild("Swim") and rootPart.Position.Y > 2 then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 local currentTween = nil
@@ -1308,6 +1436,25 @@ local function autoDialogue(preferredText, stopCondition, timeoutSeconds)
     return stopCondition ~= nil and stopCondition() == true
 end
 
+function Extras.isGameHoldingCharacter(rootPart)
+    local character = rootPart and rootPart.Parent
+    if not character then
+        return false
+    end
+    if rootPart.Anchored or character:FindFirstChild("MovementDisabled") or character:FindFirstChild("CutsceneShield") then
+        return true
+    end
+    if character:FindFirstChild("Acting") and os.clock() - (Extras.SkillMovedAt or 0) < 4 then
+        return true
+    end
+    for _, child in ipairs(rootPart:GetChildren()) do
+        if child:IsA("Weld") and string.find(child.Name, "Grab", 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
 local lockConnection = runService.Heartbeat:Connect(function(deltaTime)
     if pickupActive or travelActive or not isFarmActive() then
         return
@@ -1322,19 +1469,21 @@ local lockConnection = runService.Heartbeat:Connect(function(deltaTime)
         return
     end
 
+    if Extras.isGameHoldingCharacter(rootPart) then
+        Extras.HeldByGameAt = os.clock()
+        return
+    end
+
     local desiredCFrame = nil
     if lockedEnemyRoot and lockedEnemyRoot.Parent then
         desiredCFrame = getFarmCFrame(lockedEnemyRoot)
-        if Extras.Dodge and State.AutoDodge then
-            Extras.Dodge.trackDamage(lockedEnemyRoot, playerHumanoid, rootPart.Position)
-            desiredCFrame = Extras.Dodge.adjust(desiredCFrame, lockedEnemyRoot, rootPart.Position)
-        end
     elseif lockedTargetCFrame then
         desiredCFrame = lockedTargetCFrame
     end
     if not desiredCFrame then
         return
     end
+    desiredCFrame = Extras.aboveWater(desiredCFrame)
 
     local offset = desiredCFrame.Position - rootPart.Position
     local walkInstead = State.SafeTravel or Extras.shouldWalkAfterPullBack()
@@ -1400,432 +1549,13 @@ function Extras.expectTeleport(seconds)
     Extras.RevertWatch.ExpectUntil = os.clock() + (seconds or 8)
 end
 
-Extras.Dodge = {
-    Zones = {},
-    History = {},
-    CueZones = getgenv().HubDodgeLearned or {},
-    LastCue = setmetatable({}, { __mode = "k" }),
-    Hooked = setmetatable({}, { __mode = "k" }),
-    CueWindow = 1.2,
-    Margin = 6,
-    Linger = 1.2,
-    HistorySeconds = 45,
-    HoldSeconds = 2.5,
-    MaxRadius = 36,
-    VerticalSteps = { 0, 8, 16, 24, 32 },
-    SafeOffset = nil,
-    SafeOwner = nil,
-    SafeUntil = 0,
-    LastSolveAt = 0,
-    OwnerIds = setmetatable({}, { __mode = "k" }),
-    NextOwnerId = 0
-}
-
-getgenv().HubDodgeLearned = Extras.Dodge.CueZones
-
-function Extras.Dodge.getOwnerRoot(hitbox)
-    for _, child in ipairs(hitbox:GetChildren()) do
-        if child:IsA("JointInstance") or child:IsA("WeldConstraint") then
-            local other = child.Part0 == hitbox and child.Part1 or child.Part0
-            if other then
-                return other
-            end
-        end
-    end
-    return nil
-end
-
-function Extras.Dodge.onFarmSide(candidate, bossPosition)
-    local farmPosition = State.FarmPosition
-    if farmPosition == "Below" then
-        return candidate.Y <= bossPosition.Y - 10
-    elseif farmPosition == "Above" then
-        return candidate.Y >= bossPosition.Y + 10
-    end
-    return true
-end
-
-function Extras.Dodge.register(hitbox)
-    if not hitbox:IsA("BasePart") or not hitbox.Parent then
-        return
-    end
-    local ownerRoot = Extras.Dodge.getOwnerRoot(hitbox)
-    if not ownerRoot or not ownerRoot:IsDescendantOf(enemiesFolder) then
-        return
-    end
-    local now = os.clock()
-    local localCFrame = ownerRoot.CFrame:ToObjectSpace(hitbox.CFrame)
-    local halfSize = hitbox.Size / 2
-    local ownerId = Extras.Dodge.OwnerIds[ownerRoot]
-    if not ownerId then
-        Extras.Dodge.NextOwnerId = Extras.Dodge.NextOwnerId + 1
-        ownerId = Extras.Dodge.NextOwnerId
-        Extras.Dodge.OwnerIds[ownerRoot] = ownerId
-    end
-    local key = string.format("%d|%.0f,%.0f,%.0f|%.0f,%.0f,%.0f", ownerId, hitbox.Size.X, hitbox.Size.Y, hitbox.Size.Z, localCFrame.X, localCFrame.Y, localCFrame.Z)
-    local lifetime = Extras.Dodge.Linger
-    local ownerModel = ownerRoot.Parent
-    local lastCue = ownerModel and Extras.Dodge.LastCue[ownerModel]
-    if lastCue and now - lastCue.At <= Extras.Dodge.CueWindow then
-        lifetime = math.max(lifetime, lastCue.Duration - (now - lastCue.At) + 0.3)
-        local learnKey = ownerModel.Name .. "|" .. lastCue.Key
-        local learned = Extras.Dodge.CueZones[learnKey] or {}
-        Extras.Dodge.CueZones[learnKey] = learned
-        local duplicate = false
-        for _, zone in ipairs(learned) do
-            if (zone.LocalCFrame.Position - localCFrame.Position).Magnitude < 4 and (zone.HalfSize - halfSize).Magnitude < 2 then
-                duplicate = true
-                zone.Duration = math.max(zone.Duration, lifetime)
-                break
-            end
-        end
-        if not duplicate and #learned < 8 then
-            table.insert(learned, { LocalCFrame = localCFrame, HalfSize = halfSize, Duration = lifetime })
-        end
-    end
-    Extras.Dodge.Zones[key] = {
-        OwnerRoot = ownerRoot,
-        LocalCFrame = localCFrame,
-        HalfSize = halfSize,
-        ExpiresAt = now + lifetime
-    }
-    local history = Extras.Dodge.History
-    local found = false
-    for _, entry in ipairs(history) do
-        if entry.Key == key then
-            entry.SeenAt = now
-            entry.OwnerRoot = ownerRoot
-            found = true
-            break
-        end
-    end
-    if not found then
-        table.insert(history, { Key = key, OwnerName = ownerRoot.Parent and ownerRoot.Parent.Name, OwnerRoot = ownerRoot, LocalCFrame = localCFrame, HalfSize = halfSize, SeenAt = now })
-    end
-end
-
-function Extras.Dodge.cue(model, cueKey, duration)
-    local dodge = Extras.Dodge
-    local now = os.clock()
-    dodge.LastCue[model] = { Key = cueKey, At = now, Duration = duration or 0 }
-    local learned = dodge.CueZones[model.Name .. "|" .. cueKey]
-    local ownerRoot = model:FindFirstChild("HumanoidRootPart")
-    if not learned or not ownerRoot then
-        return
-    end
-    for index, zone in ipairs(learned) do
-        dodge.Zones["cue|" .. cueKey .. "|" .. index] = {
-            OwnerRoot = ownerRoot,
-            LocalCFrame = zone.LocalCFrame,
-            HalfSize = zone.HalfSize,
-            ExpiresAt = now + math.max(zone.Duration, dodge.Linger)
-        }
-    end
-    dodge.SafeUntil = 0
-    dodge.LastSolveAt = 0
-end
-
-function Extras.Dodge.hook(model)
-    local dodge = Extras.Dodge
-    if not model or dodge.Hooked[model] then
-        return
-    end
-    local connections = {}
-    dodge.Hooked[model] = connections
-    local markerPrefix = model.Name .. "_"
-    table.insert(connections, model.ChildAdded:Connect(function(child)
-        if child:IsA("BasePart") and string.sub(child.Name, 1, #markerPrefix) == markerPrefix then
-            dodge.cue(model, "part:" .. child.Name, 0)
-        end
-    end))
-    local humanoid = model:FindFirstChildOfClass("Humanoid")
-    local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
-    if animator then
-        table.insert(connections, animator.AnimationPlayed:Connect(function(track)
-            local priority = track.Priority
-            if priority ~= Enum.AnimationPriority.Core and priority ~= Enum.AnimationPriority.Idle and priority ~= Enum.AnimationPriority.Movement then
-                local animation = track.Animation
-                dodge.cue(model, "anim:" .. tostring(animation and animation.AnimationId), track.Length)
-            end
-        end))
-    end
-end
-
-function Extras.Dodge.unhookAll()
-    for _, connections in pairs(Extras.Dodge.Hooked) do
-        for _, connection in ipairs(connections) do
-            pcall(function()
-                connection:Disconnect()
-            end)
-        end
-    end
-    Extras.Dodge.Hooked = setmetatable({}, { __mode = "k" })
-end
-
-function Extras.Dodge.trackDamage(enemyRoot, playerHumanoid, position)
-    local dodge = Extras.Dodge
-    local health = playerHumanoid.Health
-    local previous = dodge.LastHealth
-    dodge.LastHealth = health
-    if not previous or health >= previous - playerHumanoid.MaxHealth * 0.04 then
-        return
-    end
-    local model = enemyRoot.Parent
-    local cue = model and dodge.LastCue[model]
-    local now = os.clock()
-    if not cue or now - cue.At > dodge.CueWindow then
-        return
-    end
-    if dodge.countDanger(position, enemyRoot) > 0 then
-        return
-    end
-    local localCFrame = enemyRoot.CFrame:ToObjectSpace(CFrame.new(position))
-    local halfSize = Vector3.new(8, 8, 8)
-    local duration = math.max(cue.Duration - (now - cue.At), dodge.Linger)
-    local learnKey = model.Name .. "|" .. cue.Key
-    local learned = dodge.CueZones[learnKey] or {}
-    dodge.CueZones[learnKey] = learned
-    if #learned < 12 then
-        table.insert(learned, { LocalCFrame = localCFrame, HalfSize = halfSize, Duration = duration })
-    end
-    dodge.Zones["hit|" .. learnKey .. "|" .. #learned] = {
-        OwnerRoot = enemyRoot,
-        LocalCFrame = localCFrame,
-        HalfSize = halfSize,
-        ExpiresAt = now + duration
-    }
-    dodge.SafeUntil = 0
-    dodge.LastSolveAt = 0
-end
-
-function Extras.Dodge.pointInside(zoneCFrame, halfSize, position, margin)
-    local localPoint = zoneCFrame:PointToObjectSpace(position)
-    return math.abs(localPoint.X) <= halfSize.X + margin
-        and math.abs(localPoint.Y) <= halfSize.Y + margin
-        and math.abs(localPoint.Z) <= halfSize.Z + margin
-end
-
-function Extras.Dodge.countDanger(position, enemyRoot)
-    local dodge = Extras.Dodge
-    local now = os.clock()
-    local active = 0
-    for key, zone in pairs(dodge.Zones) do
-        if now > zone.ExpiresAt or not zone.OwnerRoot.Parent then
-            dodge.Zones[key] = nil
-        elseif dodge.pointInside(zone.OwnerRoot.CFrame * zone.LocalCFrame, zone.HalfSize, position, dodge.Margin) then
-            active = active + 1
-        end
-    end
-    local remembered = 0
-    local enemyName = enemyRoot.Parent and enemyRoot.Parent.Name
-    for index = #dodge.History, 1, -1 do
-        local entry = dodge.History[index]
-        if now - entry.SeenAt > dodge.HistorySeconds then
-            table.remove(dodge.History, index)
-        elseif entry.OwnerName == enemyName then
-            local ownerRoot = (entry.OwnerRoot and entry.OwnerRoot.Parent) and entry.OwnerRoot or enemyRoot
-            if dodge.pointInside(ownerRoot.CFrame * entry.LocalCFrame, entry.HalfSize, position, dodge.Margin) then
-                remembered = remembered + 1
-            end
-        end
-    end
-    return active, remembered
-end
-
-function Extras.Dodge.exitCandidates(position, enemyRoot)
-    local dodge = Extras.Dodge
-    local candidates = {}
-    local now = os.clock()
-    for _, zone in pairs(dodge.Zones) do
-        if now <= zone.ExpiresAt and zone.OwnerRoot.Parent then
-            local zoneCFrame = zone.OwnerRoot.CFrame * zone.LocalCFrame
-            if dodge.pointInside(zoneCFrame, zone.HalfSize, position, dodge.Margin) then
-                local localPoint = zoneCFrame:PointToObjectSpace(position)
-                local half = zone.HalfSize + Vector3.new(dodge.Margin + 2, dodge.Margin + 2, dodge.Margin + 2)
-                local exits = {
-                    Vector3.new(half.X, localPoint.Y, localPoint.Z),
-                    Vector3.new(-half.X, localPoint.Y, localPoint.Z),
-                    Vector3.new(localPoint.X, half.Y, localPoint.Z),
-                    Vector3.new(localPoint.X, -half.Y, localPoint.Z),
-                    Vector3.new(localPoint.X, localPoint.Y, half.Z),
-                    Vector3.new(localPoint.X, localPoint.Y, -half.Z)
-                }
-                for _, exitPoint in ipairs(exits) do
-                    table.insert(candidates, zoneCFrame:PointToWorldSpace(exitPoint))
-                end
-            end
-        end
-    end
-    for _, direction in ipairs({ Vector3.new(1, 0, 0), Vector3.new(-1, 0, 0), Vector3.new(0, 0, 1), Vector3.new(0, 0, -1), Vector3.new(0, 1, 0), Vector3.new(0, -1, 0) }) do
-        for _, distance in ipairs({ 12, 20, 30 }) do
-            table.insert(candidates, position + direction * distance)
-        end
-    end
-    local bossPosition = enemyRoot.Position
-    local filtered = {}
-    for _, candidate in ipairs(candidates) do
-        if (candidate - bossPosition).Magnitude <= dodge.MaxRadius + 12 and dodge.onFarmSide(candidate, bossPosition) then
-            table.insert(filtered, candidate)
-        end
-    end
-    return filtered
-end
-
-function Extras.Dodge.escape(enemyRoot, currentPosition)
-    local dodge = Extras.Dodge
-    local bestPosition, bestScore = nil, math.huge
-    for _, candidate in ipairs(dodge.exitCandidates(currentPosition, enemyRoot)) do
-        local active, remembered = dodge.countDanger(candidate, enemyRoot)
-        if active == 0 then
-            local score = (candidate - currentPosition).Magnitude + remembered * 25
-            if score < bestScore then
-                bestPosition, bestScore = candidate, score
-            end
-        end
-    end
-    return bestPosition
-end
-
-function Extras.Dodge.facing(position, bossPosition, desiredCFrame)
-    local horizontal = Vector3.new(position.X - bossPosition.X, 0, position.Z - bossPosition.Z)
-    if horizontal.Magnitude < 1 then
-        return CFrame.new(position) * desiredCFrame.Rotation
-    end
-    return CFrame.lookAt(position, Vector3.new(bossPosition.X, position.Y, bossPosition.Z))
-end
-
-function Extras.Dodge.verticalSpot(desiredCFrame, enemyRoot)
-    local farmPosition = State.FarmPosition
-    if farmPosition ~= "Below" and farmPosition ~= "Above" then
-        return nil
-    end
-    local dodge = Extras.Dodge
-    local sign = farmPosition == "Below" and -1 or 1
-    local bossPosition = enemyRoot.Position
-    local startDepth = math.abs(desiredCFrame.Position.Y - bossPosition.Y)
-    local fallback, fallbackRemembered = nil, math.huge
-    for _, extraDepth in ipairs(dodge.VerticalSteps) do
-        local candidate = bossPosition + Vector3.new(0, sign * (startDepth + extraDepth), 0)
-        local active, remembered = dodge.countDanger(candidate, enemyRoot)
-        if active == 0 then
-            if remembered == 0 then
-                return candidate
-            end
-            if remembered < fallbackRemembered then
-                fallback, fallbackRemembered = candidate, remembered
-            end
-        end
-    end
-    return fallback
-end
-
-function Extras.Dodge.adjust(desiredCFrame, enemyRoot, currentPosition)
-    local dodge = Extras.Dodge
-    dodge.hook(enemyRoot.Parent)
-    if next(dodge.Zones) == nil and #dodge.History == 0 then
-        return desiredCFrame
-    end
-    local now = os.clock()
-    local bossPosition = enemyRoot.Position
-
-    if currentPosition and dodge.countDanger(currentPosition, enemyRoot) > 0 then
-        local escapePosition = dodge.verticalSpot(desiredCFrame, enemyRoot) or dodge.escape(enemyRoot, currentPosition)
-        if escapePosition then
-            dodge.SafeOffset = escapePosition - bossPosition
-            dodge.SafeOwner = enemyRoot
-            dodge.SafeUntil = now + dodge.HoldSeconds
-            dodge.LastSolveAt = now
-            return dodge.facing(escapePosition, bossPosition, desiredCFrame)
-        end
-    end
-
-    if dodge.SafeOffset and dodge.SafeOwner == enemyRoot and now < dodge.SafeUntil then
-        local heldPosition = bossPosition + dodge.SafeOffset
-        local heldActive = dodge.countDanger(heldPosition, enemyRoot)
-        if heldActive == 0 then
-            return dodge.facing(heldPosition, bossPosition, desiredCFrame)
-        end
-    end
-
-    local desiredActive, desiredRemembered = dodge.countDanger(desiredCFrame.Position, enemyRoot)
-    if desiredActive == 0 and desiredRemembered == 0 then
-        return desiredCFrame
-    end
-    if now - dodge.LastSolveAt < 0.1 and dodge.SafeOffset and dodge.SafeOwner == enemyRoot then
-        return dodge.facing(bossPosition + dodge.SafeOffset, bossPosition, desiredCFrame)
-    end
-    dodge.LastSolveAt = now
-
-    local verticalPosition = dodge.verticalSpot(desiredCFrame, enemyRoot)
-    if verticalPosition then
-        dodge.SafeOffset = verticalPosition - bossPosition
-        dodge.SafeOwner = enemyRoot
-        dodge.SafeUntil = now + dodge.HoldSeconds
-        return dodge.facing(verticalPosition, bossPosition, desiredCFrame)
-    end
-
-    local urgent = currentPosition ~= nil and dodge.countDanger(currentPosition, enemyRoot) > 0
-    local bestPosition, bestScore = nil, math.huge
-    for _, radius in ipairs({ 16, 24, dodge.MaxRadius }) do
-        for _, height in ipairs({ -30, -20, -10, 0, 10, 20, 30 }) do
-            if math.abs(height) < radius then
-                local horizontal = math.sqrt(radius * radius - height * height)
-                for step = 0, 11 do
-                    local angle = step * math.pi / 6
-                    local candidate = bossPosition + Vector3.new(math.cos(angle) * horizontal, height, math.sin(angle) * horizontal)
-                    local active, remembered = 1, 0
-                    if dodge.onFarmSide(candidate, bossPosition) then
-                        active, remembered = dodge.countDanger(candidate, enemyRoot)
-                    end
-                    if active == 0 then
-                        local anchorPosition = currentPosition or desiredCFrame.Position
-                        local currentWeight = urgent and 0.85 or 0.3
-                        local score = remembered * 1000 + (candidate - desiredCFrame.Position).Magnitude * (1 - currentWeight) + (candidate - anchorPosition).Magnitude * currentWeight
-                        if score < bestScore then
-                            bestPosition, bestScore = candidate, score
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    if not bestPosition then
-        return desiredCFrame
-    end
-    dodge.SafeOffset = bestPosition - bossPosition
-    dodge.SafeOwner = enemyRoot
-    dodge.SafeUntil = now + dodge.HoldSeconds
-    return dodge.facing(bestPosition, bossPosition, desiredCFrame)
-end
-
-function Extras.Dodge.connect()
-    if getgenv().HubDodgeConnection then
-        pcall(function()
-            getgenv().HubDodgeConnection:Disconnect()
-        end)
-        getgenv().HubDodgeConnection = nil
-    end
-    task.spawn(function()
-        local effectsFolder = extraFolder:WaitForChild("Effects", 60)
-        if not effectsFolder then
-            return
-        end
-        getgenv().HubDodgeConnection = effectsFolder.ChildAdded:Connect(function(child)
-            if child.Name == "Hitbox" then
-                if child:IsA("BasePart") and Extras.Dodge.getOwnerRoot(child) then
-                    pcall(Extras.Dodge.register, child)
-                else
-                    task.defer(function()
-                        pcall(Extras.Dodge.register, child)
-                    end)
-                end
-            end
-        end)
+if getgenv().HubDodgeConnection then
+    pcall(function()
+        getgenv().HubDodgeConnection:Disconnect()
     end)
+    getgenv().HubDodgeConnection = nil
 end
-
-Extras.Dodge.connect()
+getgenv().HubDodgeLearned = nil
 
 if getgenv().HubRevertConnection then
     pcall(function()
@@ -1860,6 +1590,13 @@ getgenv().HubRevertConnection = runService.Heartbeat:Connect(function()
     local previousPosition = revertWatch.LastPosition
     revertWatch.LastPosition = currentPosition
     if not previousPosition or (currentPosition - previousPosition).Magnitude < 60 then
+        return
+    end
+    if playerCharacter:FindFirstChild("Acting") then
+        Extras.SkillMovedAt = os.clock()
+        return
+    end
+    if Extras.isGameHoldingCharacter(rootPart) then
         return
     end
 
@@ -1942,11 +1679,6 @@ getgenv().HubCleanup = function()
         getgenv().HubRevertConnection:Disconnect()
         getgenv().HubRevertConnection = nil
     end
-    if getgenv().HubDodgeConnection then
-        getgenv().HubDodgeConnection:Disconnect()
-        getgenv().HubDodgeConnection = nil
-    end
-    pcall(Extras.Dodge.unhookAll)
     if targetBox then
         targetBox:Destroy()
         targetBox = nil
@@ -2063,8 +1795,26 @@ local function getStatPriorityOrder()
     return ordered
 end
 
+function StatMeta.getCap()
+    if StatMeta.PrestigeData == nil then
+        StatMeta.PrestigeData = false
+        pcall(function()
+            StatMeta.PrestigeData = require(replicatedStorage.Modules.Configurations.PrestigeData)
+        end)
+    end
+    local cap = nil
+    local prestigeData = StatMeta.PrestigeData
+    if prestigeData and typeof(prestigeData.GetLevelCap) == "function" then
+        local ok, result = pcall(prestigeData.GetLevelCap, getDataValue("Prestige"))
+        if ok and typeof(result) == "number" and result > 0 then
+            cap = result
+        end
+    end
+    return math.max(cap or StatMeta.FallbackCap, getPlayerLevel())
+end
+
 local function autoAllocateStats()
-    if not State.AutoStatEnabled then
+    if not State.AutoStatEnabled or StatMeta.Allocating then
         return
     end
 
@@ -2074,34 +1824,63 @@ local function autoAllocateStats()
         return
     end
 
-    local ordered = getStatPriorityOrder()
+    StatMeta.Allocating = true
+    local statCap = StatMeta.getCap()
     local spentAny = false
 
-    for _, statName in ipairs(ordered) do
-        local available = pointsValue and pointsValue.Value or 0
+    for _, statName in ipairs(getStatPriorityOrder()) do
+        local available = pointsValue.Value
         if available <= 0 then
             break
         end
 
-        local current = getDataValue(statName)
-        local room = statCap - current
-        if room > 0 then
-            local amount = math.floor(math.min(room, available))
-            if amount > 0 then
-                local invoked = invokeInput("AddPoint", statName, amount)
-                if invoked then
-                    spentAny = true
-                    task.wait(0.15)
-                    State.StatStatus = statName .. " " .. tostring(math.floor(getDataValue(statName))) .. "/" .. tostring(statCap) .. " | points left " .. tostring(math.floor(pointsValue and pointsValue.Value or 0))
-                end
+        local room = statCap - getDataValue(statName)
+        local amount = math.floor(math.min(room, available))
+        if amount > 0 and invokeInput("AddPoint", statName, amount) then
+            spentAny = true
+            local deadline = os.clock() + 1
+            while pointsValue.Value == available and os.clock() < deadline do
+                task.wait()
             end
+            State.StatStatus = string.format("%s %d/%d | points left %d", StatMeta.Display[statName] or statName, math.floor(getDataValue(statName)), statCap, math.floor(pointsValue.Value))
         end
     end
 
-    if not spentAny and pointsValue and pointsValue.Value > 0 then
-        State.StatStatus = "Points " .. tostring(math.floor(pointsValue.Value)) .. " | priority stats already capped"
+    if not spentAny and pointsValue.Value > 0 then
+        State.StatStatus = string.format("Points %d | priority stats already at the %d cap", math.floor(pointsValue.Value), statCap)
     end
+    StatMeta.Allocating = false
 end
+
+function StatMeta.connectWatcher()
+    for _, connection in ipairs(getgenv().HubStatConnections or {}) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+    local connections = {}
+    getgenv().HubStatConnections = connections
+    task.spawn(function()
+        local dataFolder = localPlayer:WaitForChild("Data", 60)
+        local pointsValue = dataFolder and dataFolder:WaitForChild("Points", 30)
+        if not pointsValue or getgenv().HubStatConnections ~= connections then
+            return
+        end
+        table.insert(connections, pointsValue:GetPropertyChangedSignal("Value"):Connect(function()
+            if State.AutoStatEnabled and pointsValue.Value > 0 then
+                task.defer(autoAllocateStats)
+            end
+        end))
+        while getgenv().HubStatConnections == connections do
+            if State.AutoStatEnabled and pointsValue.Value > 0 and not StatMeta.Allocating then
+                autoAllocateStats()
+            end
+            task.wait(0.5)
+        end
+    end)
+end
+
+StatMeta.connectWatcher()
 
 local function findNPCByName(npcName)
     if not npcName then
@@ -2144,8 +1923,8 @@ local function isItemEquipped(itemName)
     local inventoryFolder = dataFolder:FindFirstChild("Inventory")
     local item = inventoryFolder and inventoryFolder:FindFirstChild(itemName)
     local identityValue = item and item:FindFirstChild("Identity")
-    if identityValue then
-        return currentValue.Value == identityValue.Value
+    if identityValue and currentValue.Value == identityValue.Value then
+        return true
     end
 
     return currentValue.Value == itemName
@@ -2258,6 +2037,8 @@ local function tweenSegment(targetCFrame)
     end
 
     stopTween()
+    targetCFrame = Extras.aboveWater(targetCFrame)
+    Extras.leaveWater()
     local duration = math.max(expectedDistance / 60, 0.08)
     if duration ~= duration or duration > 30 then
         return 0, expectedDistance
@@ -3687,6 +3468,23 @@ function Combat.isAwakenActive(toolInstance, character)
     return awaken ~= nil and character:GetAttribute(awaken.Active) == true
 end
 
+function Combat.needsReload(toolInstance, character)
+    local ammoRule = Combat.AmmoRules[toolInstance.Name]
+    if not ammoRule or not character then
+        return false
+    end
+    if ammoRule.FormAttribute and character:GetAttribute(ammoRule.FormAttribute) then
+        return false
+    end
+    for _, attributeName in ipairs(ammoRule.Attributes) do
+        local ammo = tonumber(character:GetAttribute(attributeName))
+        if ammo and ammo <= ammoRule.ReloadAt then
+            return true
+        end
+    end
+    return false
+end
+
 function Combat.isSkillWanted(toolInstance, skillKey, character)
     local rule = Combat.SkillRules[toolInstance.Name]
     local override = rule and rule[skillKey]
@@ -3694,6 +3492,8 @@ function Combat.isSkillWanted(toolInstance, skillKey, character)
         return false
     elseif override == "awakened" and Combat.isAwakenActive(toolInstance, character) then
         return true
+    elseif override == "reload" then
+        return Combat.needsReload(toolInstance, character)
     end
     return State.FarmSkills[skillKey] == true
 end
@@ -3735,6 +3535,19 @@ function Combat.castSkills(toolInstance, character, enemyRoot)
 
     local activeTool = Combat.getActiveTool(toolInstance)
     local availableKeys = Combat.getSkillKeys(activeTool)
+
+    for skillKey, override in pairs(Combat.SkillRules[toolInstance.Name] or {}) do
+        local pendingKey = toolInstance.Name .. "|" .. skillKey
+        if override == "reload" and Combat.needsReload(toolInstance, character)
+            and (availableKeys == nil or availableKeys[skillKey])
+            and now >= (Combat.PendingUntil[pendingKey] or 0)
+            and not Combat.isOnCooldown(toolInstance, activeTool, skillKey, character) then
+            Combat.PendingUntil[pendingKey] = now + 1.2
+            Combat.NextCastAt = now + 0.35
+            Combat.fireSkill(toolInstance, activeTool, skillKey, enemyRoot)
+            return true
+        end
+    end
 
     for _, skillKey in ipairs(skillKeyOrder) do
         local pendingKey = toolInstance.Name .. "|" .. skillKey
@@ -3860,7 +3673,7 @@ function Combat.updateRotation(character)
 end
 
 function Combat.tick()
-    if not isFarmActive() or pickupActive then
+    if not isFarmActive() or pickupActive or (Extras.OverHeaven and Extras.OverHeaven.Busy) then
         return
     end
 
@@ -4063,11 +3876,7 @@ local function engageMob(targetMobName, isFarmingActiveCondition, allowBoss)
             if currentRoot and (currentRoot.Position - enemyRoot.Position).Magnitude <= 60 then
                 return nil
             end
-            local liveCFrame = getFarmCFrame(enemyRoot)
-            if Extras.Dodge and State.AutoDodge then
-                liveCFrame = Extras.Dodge.adjust(liveCFrame, enemyRoot, currentRoot and currentRoot.Position)
-            end
-            return liveCFrame
+            return getFarmCFrame(enemyRoot)
         end, enemyStillValid)
         Combat.ApproachRoot = nil
         rootPart = getRoot()
@@ -4454,6 +4263,9 @@ AutoPickup.ItemQuest = {
 }
 
 function AutoPickup.findTimedTarget()
+    if workspaceService:GetAttribute("Dungeon") ~= nil then
+        return nil
+    end
     for _, itemName in ipairs(AutoPickup.TimedItems) do
         local requiredQuest = AutoPickup.ItemQuest[itemName]
         local questAllows = requiredQuest == nil or UnlockFarm.getActiveQuestFolder(requiredQuest) ~= nil
@@ -4626,7 +4438,7 @@ function Extras.checkStuck()
     local rootPart, playerHumanoid = getRoot()
     local target = Extras.getFightTarget()
     local excused = not rootPart or not playerHumanoid or playerHumanoid.Health <= 0 or not target
-        or pickupActive or Extras.PriorityRequest ~= nil or Extras.isMovementBlocked()
+        or pickupActive or (Extras.PriorityRequest ~= nil and Extras.PriorityRequest ~= "twoh") or Extras.isMovementBlocked()
         or Extras.isCarryingCoffin() or not isFarmActive()
     if excused or (rootPart.Position - target.Position).Magnitude <= 45 or (rootPart.Position - target.Position).Magnitude > 1000 then
         watch.Position = rootPart and rootPart.Position
@@ -4999,14 +4811,14 @@ Extras.Threads = {}
 Extras.CoffinCandidates = {}
 Extras.TraitByLabel = {}
 Extras.DungeonFolder = "LEGACY PIECE"
-Extras.DungeonSettingsPath = "LEGACY PIECE/dungeon_settings.json"
-Extras.DungeonHelperPath = "LEGACY PIECE/dungeon_helper.luau"
+Extras.DungeonSettingsPath = "LEGACY PIECE/dungeon_settings_default.json"
+Extras.DungeonHelperPath = "LEGACY PIECE/dungeon_helper_default.luau"
 Extras.DungeonDifficulties = { "Easy", "Medium", "Hard", "Extreme" }
 Extras.DungeonHelperSource = [==[
 local replicatedStorage = game:GetService("ReplicatedStorage")
 local httpService = game:GetService("HttpService")
-local settingsPath = "LEGACY PIECE/dungeon_settings.json"
-local helperLoader = 'loadstring(readfile("LEGACY PIECE/dungeon_helper.luau"))()'
+local settingsPath = "LEGACY PIECE/dungeon_settings_default.json"
+local helperLoader = 'loadstring(readfile("LEGACY PIECE/dungeon_helper_default.luau"))()'
 
 local function readSettings()
     local ok, decoded = pcall(function()
@@ -5394,8 +5206,17 @@ function Extras.runWhaleCycle()
     local indicator = Extras.findWhaleIndicator()
     if not indicator or Extras.PriorityRequest == "pickupevent" then
         Extras.endWhaleEvent()
-        State.ExtraStatus = indicator and "Whale: paused while Auto Pickup collects an item" or "Whale: waiting for the whale event"
+        if not Extras.otherFarmActive() or not State.AutoFishEnabled then
+            State.ExtraStatus = indicator and "Whale: paused while Auto Pickup collects an item" or "Whale: waiting for the whale event"
+        end
         task.wait(indicator and 0.5 or 2)
+        return
+    end
+
+    if not State.AutoFishEnabled then
+        Extras.endWhaleEvent()
+        State.ExtraStatus = "Whale: event is up | turn on Auto Fishing too (Whale sends Auto Fishing to the whale)"
+        task.wait(2)
         return
     end
 
@@ -5404,7 +5225,7 @@ function Extras.runWhaleCycle()
     end
     if not acquireMovement("whale") then
         Extras.WhaleWaitSince = Extras.WhaleWaitSince or os.clock()
-        if os.clock() - Extras.WhaleWaitSince > 20 then
+        if os.clock() - Extras.WhaleWaitSince > 8 and Extras.PriorityRequest ~= "twoh" then
             stopTween()
             movementOwner = nil
         end
@@ -5449,7 +5270,7 @@ Extras.Fishing = {
 }
 
 function Extras.isFishingActive()
-    return State.AutoFishEnabled or (State.AutoDeepsharkEnabled and Extras.DeepsharkFishing == true) or (State.AutoWhaleEnabled and Extras.WhaleFishing == true and Extras.PriorityRequest ~= "pickupevent")
+    return State.AutoFishEnabled or (State.AutoDeepsharkEnabled and Extras.DeepsharkFishing == true) or (State.AutoWhaleEnabled and Extras.WhaleFishing == true and Extras.PriorityRequest ~= "pickupevent") or (Extras.TwohFishing == true and Extras.Twoh.isActive())
 end
 
 function Extras.getFishingRemote()
@@ -5668,12 +5489,40 @@ end
 
 function Extras.runFishingCycle()
     local fishing = Extras.Fishing
+    local twohThread = Extras.TwohFishing == true and coroutine.running() == Extras.TwohFishingThread
+
+    if Extras.TwohFishing and Extras.Twoh.isActive() and not twohThread then
+        State.FishStatus = "standing by | Auto TWOH is fishing"
+        task.wait(1)
+        return
+    end
+
+    if State.AutoFishEnabled and not Extras.DeepsharkFishing and not twohThread then
+        local whaleEvent = State.AutoWhaleEnabled and Extras.findWhaleIndicator() ~= nil
+        local deepsharkBusy = State.AutoDeepsharkEnabled and (getInventoryAmount(Extras.DeepsharkBait) > 0 or Extras.getDeepsharkEnemy() ~= nil)
+        if whaleEvent and movementOwner ~= "whale" then
+            if movementOwner == "fishing" then
+                Extras.releaseFishingSpot()
+            end
+            State.FishStatus = "whale event | heading to the whale"
+            task.wait(0.3)
+            return
+        end
+        if not whaleEvent and (deepsharkBusy or Extras.otherFarmActive()) then
+            if movementOwner == "fishing" then
+                Extras.releaseFishingSpot()
+            end
+            State.FishStatus = deepsharkBusy and "standing by | Ancient Deepshark is using Abyssal Bait" or (State.AutoWhaleEnabled and "standing by | another farm is on, fishing only during whale events" or "standing by | another farm is on (turn on Whale to fish at whale events)")
+            task.wait(1)
+            return
+        end
+    end
 
     if Extras.PriorityRequest and movementOwner == "fishing" then
         Extras.releaseFishingSpot()
     end
 
-    if movementOwner and movementOwner ~= "whale" and movementOwner ~= "fishing" and not (movementOwner == "deepshark" and Extras.DeepsharkFishing) then
+    if movementOwner and movementOwner ~= "whale" and movementOwner ~= "fishing" and not (movementOwner == "deepshark" and Extras.DeepsharkFishing) and not (movementOwner == "twoh" and twohThread) then
         State.FishStatus = "paused | " .. tostring(movementOwner) .. " is active"
         task.wait(1)
         return
@@ -5692,9 +5541,9 @@ function Extras.runFishingCycle()
         return
     end
 
-    local whaleIndicator = (State.AutoWhaleEnabled or Extras.DeepsharkFishing) and Extras.findWhaleIndicator() or nil
+    local whaleIndicator = (State.AutoWhaleEnabled or Extras.DeepsharkFishing or twohThread) and Extras.findWhaleIndicator() or nil
     local aimPoint = Extras.findFishingAim(whaleIndicator and whaleIndicator.Position or nil)
-    if not aimPoint and State.AutoFishEnabled and not Extras.DeepsharkFishing and not Extras.WhaleFishing and Extras.goToOpenWater() then
+    if not aimPoint and State.AutoFishEnabled and not Extras.DeepsharkFishing and not Extras.WhaleFishing and not twohThread and Extras.goToOpenWater() then
         aimPoint = Extras.findFishingAim(nil)
     end
     if not aimPoint then
@@ -5868,7 +5717,10 @@ function Extras.getWhaleFishingPoint()
     return Vector3.new(indicator.Position.X + 40, 0, indicator.Position.Z), indicator
 end
 
-function Extras.goToDeepSea(targetPoint, label)
+function Extras.goToDeepSea(targetPoint, label, isActive)
+    isActive = isActive or function()
+        return State.AutoDeepsharkEnabled
+    end
     local point = targetPoint or Extras.getDeepSeaPoint()
     local rootPart = getRoot()
     if not rootPart then
@@ -5881,16 +5733,17 @@ function Extras.goToDeepSea(targetPoint, label)
         lockedTargetCFrame = nil
         Combat.LockedMobName = nil
         setTargetBox(nil)
-        safeTravelTo(CFrame.new(point + Vector3.new(0, 20, 0)), function()
-            return State.AutoDeepsharkEnabled
-        end)
+        safeTravelTo(CFrame.new(point + Vector3.new(0, 20, 0)), isActive)
     end
 
     rootPart = getRoot()
     return rootPart ~= nil and Extras.getFlatDistance(rootPart.Position, point) <= 60
 end
 
-function Extras.enterSeaWater()
+function Extras.enterSeaWater(isActive)
+    isActive = isActive or function()
+        return State.AutoDeepsharkEnabled
+    end
     local rootPart = getRoot()
     if not rootPart then
         return false
@@ -5904,7 +5757,7 @@ function Extras.enterSeaWater()
     lockedEnemyRoot = nil
     lockedTargetCFrame = nil
     local deadline = os.clock() + 8
-    while State.AutoDeepsharkEnabled and os.clock() < deadline do
+    while isActive() and os.clock() < deadline do
         rootPart = getRoot()
         if not rootPart then
             return false
@@ -5986,14 +5839,47 @@ function Extras.endDeepsharkFishing()
     end
 end
 
+function Extras.releaseDeepsharkPriority()
+    if Extras.PriorityRequest == "deepshark" then
+        Extras.PriorityRequest = nil
+    end
+    Extras.DeepsharkPriorityUntil = nil
+end
+
 function Extras.runDeepsharkCycle()
-    if not acquireMovement("deepshark") then
-        State.ExtraStatus = "Deepshark: waiting for " .. tostring(movementOwner) .. " to finish"
-        task.wait(1)
+    local baitCount = getInventoryAmount(Extras.DeepsharkBait)
+    if baitCount <= 0 and not Extras.DeepsharkDelegated and not Extras.getDeepsharkEnemy() then
+        Extras.endDeepsharkFishing()
+        Extras.releaseDeepsharkPriority()
+        releaseMovement("deepshark")
+        if not Extras.otherFarmActive() or not State.AutoFishEnabled then
+            State.ExtraStatus = State.AutoFishEnabled and "Deepshark: no Abyssal Bait | Auto Fishing is catching more" or "Deepshark: no Abyssal Bait | turn on Auto Fishing to catch more"
+        end
+        task.wait(2)
         return
     end
 
-    local baitCount = getInventoryAmount(Extras.DeepsharkBait)
+    local whaleEvent = State.AutoWhaleEnabled and State.AutoFishEnabled and Extras.findWhaleIndicator() ~= nil
+    if not whaleEvent and not Extras.PriorityRequest and os.clock() >= (Extras.DeepsharkBackoffUntil or 0) then
+        Extras.PriorityRequest = "deepshark"
+        Extras.DeepsharkPriorityUntil = os.clock() + 150
+    end
+    if Extras.PriorityRequest == "deepshark" and os.clock() > (Extras.DeepsharkPriorityUntil or math.huge) then
+        Extras.releaseDeepsharkPriority()
+        Extras.DeepsharkBackoffUntil = os.clock() + 120
+    end
+
+    if not acquireMovement("deepshark") then
+        Extras.DeepsharkWaitSince = Extras.DeepsharkWaitSince or os.clock()
+        if Extras.PriorityRequest == "deepshark" and os.clock() - Extras.DeepsharkWaitSince > 8 then
+            stopTween()
+            movementOwner = nil
+        end
+        State.ExtraStatus = "Deepshark: Abyssal Bait ready | waiting for " .. tostring(movementOwner) .. " to finish"
+        task.wait(0.5)
+        return
+    end
+    Extras.DeepsharkWaitSince = nil
     if Extras.getDeepsharkEnemy() then
         Extras.endDeepsharkFishing()
         local killsSoFar = Extras.getDeepsharkKillStat() - (Extras.DeepsharkKillsAtStart or Extras.getDeepsharkKillStat())
@@ -6100,7 +5986,7 @@ Extras.Araya = {
     DungeonPlaceId = 105440532661931,
     EstateName = "Abandoned Spider Estate",
     BossName = "The Dihui Star, Araya",
-    SettingsPath = "LEGACY PIECE/araya_settings.json",
+    SettingsPath = "LEGACY PIECE/araya_settings_default.json",
     Difficulty = "Easy",
     MoneyCost = 75000000,
     ShardCost = 500000,
@@ -6112,7 +5998,7 @@ Extras.Araya = {
         { "Time Safe Core", 15 }
     },
     TitleName = "The Pinky Nursefather",
-    HubLoader = 'if getgenv().HubAutoLoaded then return end getgenv().HubAutoLoaded = true if not game:IsLoaded() then game.Loaded:Wait() end local players = game:GetService("Players") while not players.LocalPlayer do task.wait() end players.LocalPlayer:WaitForChild("Data", 60) task.wait(2) loadstring(readfile("LEGACY PIECE/legacy_piece.luau"))()'
+    HubLoader = 'if getgenv().HubAutoLoaded then return end getgenv().HubAutoLoaded = true if not game:IsLoaded() then game.Loaded:Wait() end local players = game:GetService("Players") while not players.LocalPlayer do task.wait() end players.LocalPlayer:WaitForChild("Data", 60) task.wait(2) getgenv().HubDefaultResume = true loadstring(readfile("LEGACY PIECE/legacy_piece_default.luau"))()'
 }
 
 Extras.Araya.MaxTimeSafeLosses = math.huge
@@ -6279,7 +6165,22 @@ function Extras.getArayaStage()
     if #Extras.getArayaMissing() == 0 then
         return "turnin"
     end
+    if Extras.arayaOnlyMoneyMissing() then
+        return "money"
+    end
     return "timesafe"
+end
+
+function Extras.arayaOnlyMoneyMissing()
+    if not UnlockFarm.isQuestCompleted(Extras.Araya.Quest2) then
+        return false
+    end
+    for _, entry in ipairs(Extras.getArayaMissing()) do
+        if entry ~= "$75M" then
+            return false
+        end
+    end
+    return true
 end
 
 function Extras.goToLostAfterimage()
@@ -6437,7 +6338,7 @@ function Extras.connectArayaDungeon()
                     Extras.stopArayaForLosses()
                     return
                 end
-                wantsReplay = true
+                wantsReplay = not (Extras.arayaOnlyMoneyMissing() or #Extras.getArayaMissing() == 0)
             end
             if wantsReplay then
                 task.delay(2, function()
@@ -6487,6 +6388,25 @@ function Extras.runArayaDungeonCycle(dungeonName)
     end
 
     local araya = Extras.Araya
+    if Extras.isArayaDungeon(dungeonName) and (Extras.arayaOnlyMoneyMissing() or (UnlockFarm.isQuestCompleted(araya.Quest2) and #Extras.getArayaMissing() == 0)) then
+        State.FarmDistanceOverride = nil
+        lockedEnemyRoot = nil
+        lockedTargetCFrame = nil
+        State.ExtraStatus = "Araya: items complete | leaving the Time Safe to " .. (#Extras.getArayaMissing() == 0 and "turn in" or "farm money (Ambush)")
+        if os.clock() - (araya.LeaveSentAt or 0) > 8 then
+            araya.LeaveSentAt = os.clock()
+            Extras.expectTeleport(15)
+            local leaveRemote = eventsFolder and eventsFolder:FindFirstChild("DungeonLeave")
+            if leaveRemote then
+                pcall(function()
+                    leaveRemote:FireServer()
+                end)
+            end
+        end
+        releaseMovement("araya")
+        task.wait(1)
+        return
+    end
     local waveText = string.format("wave %s/%s", tostring(araya.DungeonWave or "?"), tostring(araya.DungeonMaxWave or "?"))
     local progressText
     if dungeonName == araya.EstateName then
@@ -6553,7 +6473,12 @@ function Extras.runArayaCycle()
     local stage, questName = Extras.getArayaStage()
 
     if stage == "done" then
-        stage = "timesafe"
+        State.FarmDistanceOverride = nil
+        Extras.saveArayaSettings(false, 0)
+        Extras.stopLoop("AutoArayaEnabled", "araya")
+        Extras.syncToggle("ArayaToggle", false)
+        State.ExtraStatus = "Araya: obtained | Auto Araya stopped"
+        return
     end
 
     if not acquireMovement("araya") then
@@ -6583,6 +6508,14 @@ function Extras.runArayaCycle()
         Extras.enterArayaDungeon("EnterSpiderEstate", "SpiderEstatePortal", "Abandoned Estate")
     elseif stage == "timesafe" then
         Extras.enterArayaDungeon("EnterTimeSafe", "TimeSafePortal", "Time Safe")
+    elseif stage == "money" then
+        local label = string.format("Araya: items complete | money $%dM/%dM | Ambush", math.floor(getMoney() / 1000000), math.floor(araya.MoneyCost / 1000000))
+        if not Extras.runAmbushDuty(function()
+            return State.AutoArayaEnabled and getMoney() < araya.MoneyCost
+        end, label) then
+            State.ExtraStatus = label .. ": waiting for the next ambush"
+            task.wait(0.5)
+        end
     elseif stage == "turnin" then
         local npc = Extras.goToLostAfterimage()
         if npc then
@@ -6604,6 +6537,313 @@ function Extras.runArayaCycle()
     releaseMovement("araya")
 end
 
+Extras.Dungeons = {
+    { Name = "Realm Beyond Heaven (TWOH)", Key = "Realm Beyond Heaven", NPC = "The Gatekeeper", NPCPosition = Vector3.new(-876, 114, -1547), Portal = "RealmBeyondHeavenPortal", Item = "Realm Beyond Heaven Key", Style = "The World", KeyBoss = "Chihora" },
+    { Name = "Excutioners Arrival (Cursed Child)", Key = "Excutioners Arrival", NPC = "The Gatekeeper", NPCPosition = Vector3.new(-876, 114, -1547), Portal = "CursedChildPortal", Item = "Cursed Child Key" },
+    { Name = "House of Spiders (Rien)", Key = "House of Spiders", NPC = "Index Messenger", NPCPosition = Vector3.new(2881, 37, -2852), Input = "EnterHouseOfSpiders", Portal = "HouseOfSpidersPortal" },
+    { Name = "Devil's Route (Vergil, Dante)", Key = "Devil's Route", NPC = "Marlow, The Last Conductor", NPCPosition = Vector3.new(630, -3524, 2046), Input = "EnterDevilsRoute", Portal = "DevilsRoutePortal", Quest = "The Final Route" },
+    { Name = "The Time Safe (Araya)", Key = "The House of Spiders: The Time Safe", NPC = "Lost Afterimage", NPCPosition = Vector3.new(3842, 96, -3034), Input = "EnterTimeSafe", Portal = "TimeSafePortal" },
+    { Name = "Abandoned Spider Estate", Key = "Abandoned Spider Estate", NPC = "Lost Afterimage", NPCPosition = Vector3.new(3842, 96, -3034), Input = "EnterSpiderEstate", Portal = "SpiderEstatePortal" }
+}
+
+function Extras.getDungeonOptions()
+    local options = {}
+    for _, entry in ipairs(Extras.Dungeons) do
+        table.insert(options, entry.Name)
+    end
+    return options
+end
+
+function Extras.getSelectedDungeon()
+    for _, entry in ipairs(Extras.Dungeons) do
+        if entry.Name == State.AutoDungeonTarget then
+            return entry
+        end
+    end
+    return Extras.Dungeons[1]
+end
+
+function Extras.isDungeonActive()
+    return State.AutoDungeonEnabled
+end
+
+function Extras.dungeonStatus(message)
+    State.ExtraStatus = "Dungeon: " .. message
+end
+
+function Extras.connectAutoDungeon()
+    if getgenv().HubAutoDungeonConnection and getgenv().HubAutoDungeonConnection.Connected ~= false then
+        return
+    end
+    local syncRemote = eventsFolder and eventsFolder:FindFirstChild("DungeonInsideSync")
+    if not syncRemote then
+        return
+    end
+    local lastStatus = nil
+    getgenv().HubAutoDungeonConnection = syncRemote.OnClientEvent:Connect(function(payload)
+        if typeof(payload) ~= "table" or payload.Type ~= "State" then
+            return
+        end
+        Extras.DungeonWave = payload.CurrentWave
+        Extras.DungeonMaxWave = payload.MaxWave
+        local hubState = getgenv().State
+        local currentDungeon = workspaceService:GetAttribute("Dungeon")
+        local twohRealm = hubState and Extras.Twoh.isActive() and currentDungeon == Extras.Twoh.RealmName
+        if twohRealm then
+            Extras.Twoh.DungeonStatus = payload.Status
+        end
+        Prestige.DungeonStatus = payload.Status
+        if payload.Status == lastStatus then
+            return
+        end
+        lastStatus = payload.Status
+        if twohRealm then
+            if payload.Status == "Vote" then
+                task.delay(1, function()
+                    pcall(function()
+                        syncRemote:FireServer("Vote", Extras.Twoh.RealmDifficulty)
+                    end)
+                end)
+            end
+            return
+        end
+        if Prestige.ownsDungeon(currentDungeon) then
+            Prestige.onDungeonState(syncRemote, payload.Status, currentDungeon)
+            return
+        end
+        if not hubState or not hubState.AutoDungeonEnabled or hubState.AutoArayaEnabled then
+            return
+        end
+        if payload.Status == "Vote" then
+            task.delay(1, function()
+                pcall(function()
+                    syncRemote:FireServer("Vote", hubState.DungeonDifficulty or "Hard")
+                end)
+            end)
+        elseif payload.Status == "Clear" or payload.Status == "Lose" then
+            task.delay(2, function()
+                pcall(function()
+                    syncRemote:FireServer("ReplayVote")
+                end)
+            end)
+        end
+    end)
+end
+
+function Extras.pickDungeonTarget(rootPart)
+    local bestEnemy, bestScore = nil, math.huge
+    local floorY = Extras.DungeonFloorLevel
+    for _, enemy in ipairs(enemiesFolder:GetChildren()) do
+        local alive, enemyRoot = isLivingEnemy(enemy)
+        if alive and floorY and enemyRoot.Position.Y > floorY + 150 then
+            alive = false
+            Extras.HighEnemySeenAt = os.clock()
+        end
+        if alive then
+            local score = (enemyRoot.Position - rootPart.Position).Magnitude
+            if enemy:GetAttribute("Boss") == true then
+                score = score + 200
+            end
+            if score < bestScore then
+                bestEnemy, bestScore = enemy, score
+            end
+        end
+    end
+    return bestEnemy
+end
+
+function Extras.runDungeonInside(dungeonName)
+    Extras.connectAutoDungeon()
+    pcall(Extras.queueArayaReload)
+    if not acquireMovement("dungeon") then
+        Extras.dungeonStatus("waiting for " .. tostring(movementOwner) .. " to finish")
+        task.wait(1)
+        return
+    end
+    local waveText = string.format("wave %s/%s", tostring(Extras.DungeonWave or "?"), tostring(Extras.DungeonMaxWave or "?"))
+    local rootPart = getRoot()
+    local target = rootPart and Extras.pickDungeonTarget(rootPart)
+    if target then
+        Extras.DungeonIdleSince = nil
+        Extras.dungeonStatus(string.format("[%s] fighting %s | %s", dungeonName, target.Name, waveText))
+        farmMobWithAnchor(target.Name, function()
+            return State.AutoDungeonEnabled and target.Parent ~= nil
+        end, true)
+    else
+        Extras.dungeonStatus(string.format("[%s] waiting for the next wave | %s", dungeonName, waveText))
+        local now = os.clock()
+        Extras.DungeonIdleSince = Extras.DungeonIdleSince or now
+        if now - Extras.DungeonIdleSince >= 12 and now - (Extras.DungeonNudgeAt or 0) >= 10 then
+            Extras.DungeonNudgeAt = now
+            local syncRemote = eventsFolder and eventsFolder:FindFirstChild("DungeonInsideSync")
+            if syncRemote then
+                pcall(function()
+                    syncRemote:FireServer("ReplayVote")
+                end)
+                pcall(function()
+                    syncRemote:FireServer("Vote", State.DungeonDifficulty or "Hard")
+                end)
+            end
+        end
+        task.wait(0.5)
+    end
+    releaseMovement("dungeon")
+end
+
+function Extras.enterSelectedDungeon(entry, isActive, statusSetter, prepareStyle)
+    isActive = isActive or Extras.isDungeonActive
+    statusSetter = statusSetter or Extras.dungeonStatus
+    local portalRemote = eventsFolder and eventsFolder:FindFirstChild(entry.Portal)
+    if not portalRemote then
+        statusSetter(entry.Name .. " | portal remote not found")
+        task.wait(2)
+        return false
+    end
+    if prepareStyle then
+        prepareStyle()
+    elseif entry.Style and not isItemEquipped(entry.Style) then
+        statusSetter(entry.Name .. " | equipping " .. entry.Style .. " (required)")
+        equipInventoryItem(entry.Style)
+    end
+    local npc = Extras.goToNPCAt(entry.NPC, entry.NPCPosition, isActive, statusSetter)
+    if not npc then
+        statusSetter("cannot reach " .. entry.NPC)
+        task.wait(1)
+        return false
+    end
+    pcall(Extras.queueArayaReload)
+    local sentAt = os.clock()
+    local portalReplies = {}
+    if Extras.PortalReplyConnection then
+        pcall(function()
+            Extras.PortalReplyConnection:Disconnect()
+        end)
+    end
+    local replyConnection = portalRemote.OnClientEvent:Connect(function(kind, payload)
+        table.insert(portalReplies, tostring(kind) .. (typeof(payload) == "string" and (":" .. payload) or ""))
+    end)
+    Extras.PortalReplyConnection = replyConnection
+    Extras.LastPortalReplies = portalReplies
+    statusSetter("opening the " .. entry.Name .. " lobby")
+    if entry.Input then
+        Extras.openArayaDialogue(npc)
+    end
+    local prompt = npc:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if prompt then
+        pcall(fireproximityprompt, prompt)
+    end
+    task.wait(0.4)
+    local keysBefore = entry.Item and getInventoryAmount(entry.Item) or nil
+    if entry.Input then
+        pcall(function()
+            inputEvent:FireServer(entry.Input)
+        end)
+    else
+        pcall(function()
+            portalRemote:FireServer("Create")
+        end)
+    end
+    local paidDeadline = os.clock() + 3
+    while keysBefore and os.clock() < paidDeadline and getInventoryAmount(entry.Item) >= keysBefore do
+        task.wait(0.1)
+    end
+    local keyPaid = keysBefore ~= nil and getInventoryAmount(entry.Item) < keysBefore
+    Extras.LastEntryKeyPaid = keyPaid
+    task.wait(0.8)
+    for attempt = 1, (keyPaid and 3 or 1) do
+        Extras.expectTeleport(30)
+        pcall(function()
+            portalRemote:FireServer("Start")
+        end)
+        statusSetter(string.format("starting %s | waiting for the teleport%s", entry.Name, attempt > 1 and (" (Start retry " .. attempt .. ", key already paid)") or ""))
+        local deadline = os.clock() + (attempt == 1 and 25 or 15)
+        while isActive() and os.clock() < deadline do
+            task.wait(0.5)
+        end
+        if not isActive() then
+            break
+        end
+    end
+    replyConnection:Disconnect()
+    if Extras.PortalReplyConnection == replyConnection then
+        Extras.PortalReplyConnection = nil
+    end
+    if isActive() then
+        local reply = (State.LastNotifyTime or 0) >= sentAt and tostring(State.LastNotifyText) or "no reply"
+        statusSetter(entry.Name .. " did not start | key paid " .. tostring(keyPaid) .. " | " .. reply .. " | portal: " .. table.concat(portalReplies, ","))
+        if not keyPaid then
+            pcall(function()
+                portalRemote:FireServer("Leave")
+            end)
+        end
+        task.wait(3)
+        return false
+    end
+    return true
+end
+
+function Extras.runDungeonCycle()
+    local dungeonName = workspaceService:GetAttribute("Dungeon")
+    if typeof(dungeonName) == "string" then
+        if State.AutoArayaEnabled and Extras.isArayaDungeon(dungeonName) then
+            task.wait(1)
+            return
+        end
+        local realmOwner = Extras.Twoh.realmOwner()
+        if realmOwner and dungeonName == Extras.Twoh.RealmName then
+            Extras.dungeonStatus("paused: " .. realmOwner .. " owns Realm Beyond Heaven")
+            task.wait(2)
+            return
+        end
+        if Prestige.ownsDungeon(dungeonName) then
+            Extras.dungeonStatus("paused: Auto Prestige is running " .. dungeonName)
+            task.wait(2)
+            return
+        end
+        Extras.runDungeonInside(dungeonName)
+        return
+    end
+
+    local entry = Extras.getSelectedDungeon()
+    local realmOwner = Extras.Twoh.realmOwner()
+    if realmOwner and entry.Key == Extras.Twoh.RealmName then
+        Extras.dungeonStatus("paused: " .. realmOwner .. " owns Realm Beyond Heaven and its keys")
+        task.wait(3)
+        return
+    end
+    if State.PrestigeEnabled and Prestige.DungeonWork then
+        Extras.dungeonStatus("paused: Auto Prestige is heading to " .. tostring(Prestige.DungeonWork))
+        task.wait(3)
+        return
+    end
+    if entry.Quest and not UnlockFarm.isQuestCompleted(entry.Quest) then
+        Extras.dungeonStatus(entry.Name .. " | finish the quest \"" .. entry.Quest .. "\" first")
+        task.wait(3)
+        return
+    end
+    if not acquireMovement("dungeon") then
+        Extras.dungeonStatus("waiting for " .. tostring(movementOwner) .. " to finish")
+        task.wait(1)
+        return
+    end
+    if entry.Item and getInventoryAmount(entry.Item) < 1 then
+        if entry.KeyBoss then
+            local catalogItem = BossFarm.getSummonEntry(entry.KeyBoss)
+            Extras.dungeonStatus(string.format("%s | no %s | farming %s for it", entry.Name, entry.Item, entry.KeyBoss))
+            BossFarm.prepareAndKill(catalogItem, function()
+                return State.AutoDungeonEnabled and getInventoryAmount(entry.Item) < 1
+            end, "dungeon")
+        else
+            Extras.dungeonStatus(entry.Name .. " | missing " .. entry.Item)
+            task.wait(3)
+        end
+    else
+        Extras.enterSelectedDungeon(entry)
+    end
+    lockedTargetCFrame = nil
+    releaseMovement("dungeon")
+end
+
 function Extras.resumeArayaAfterTeleport()
     local settings = Extras.loadArayaSettings()
     if settings.Enabled ~= true then
@@ -6617,6 +6857,1796 @@ function Extras.resumeArayaAfterTeleport()
     Extras.syncToggle("FishToggle", false)
     Extras.startLoop("AutoArayaEnabled", Extras.runArayaCycle)
     Extras.syncToggle("ArayaToggle", true)
+end
+
+Extras.Twoh = {
+    NPCName = "Dio",
+    NPCPosition = Vector3.new(-2644, 102, 3279),
+    QuestNPCs = {
+        Dio = Vector3.new(-2644, 102, 3279),
+        ["The Gatekeeper"] = Vector3.new(-876, 114, -1547)
+    },
+    StyleName = "The World",
+    BossName = "Dio",
+    EarnedFlag = "TheWorldOverHeavenEarned",
+    RequiredLevel = 10,
+    Quests = { "Earthly Proofs 1", "Earthly Proofs 2", "Earthly Proofs 3", "Earthly Proofs 4", "Earthly Proofs 5" },
+    NextSteps = { "EP1 Dio", "EP2 diaries", "EP3 Chrono Seals", "EP4 Echo of the Rewritten Hour", "EP5 Proofs of Heaven" },
+    AcceptGrace = 8,
+    AcceptSeenAt = {},
+    EnhanceLevel = nil,
+    EnhanceCheckedAt = -math.huge,
+    SavedCombat = nil,
+    WaitSince = nil,
+    RealmRequesters = {},
+    Delegated = false,
+    PrestigeKillType = "DioHeavenAscensionKills"
+}
+
+function Extras.Twoh.status(message)
+    State.ExtraStatus = "TWOH: " .. tostring(message)
+    if Extras.Twoh.isDelegatedOnly() then
+        State.PrestigeStatus = "Prestige: " .. tostring(Extras.Twoh.PrestigeLabel or "Dio Heaven Ascension kills") .. " | " .. tostring(message)
+    end
+end
+
+function Extras.Twoh.isActive()
+    return State.AutoTwohEnabled or (Extras.Twoh.Delegated == true and State.PrestigeEnabled == true)
+end
+
+function Extras.Twoh.isDelegatedOnly()
+    return Extras.Twoh.Delegated == true and State.PrestigeEnabled == true and not State.AutoTwohEnabled
+end
+
+function Extras.Twoh.hasWorld()
+    local dataFolder = localPlayer:FindFirstChild("Data")
+    local inventoryFolder = dataFolder and dataFolder:FindFirstChild("Inventory")
+    return inventoryFolder ~= nil and inventoryFolder:FindFirstChild(Extras.Twoh.StyleName) ~= nil
+end
+
+function Extras.Twoh.isEarned()
+    local twoh = Extras.Twoh
+    if localPlayer:GetAttribute(twoh.EarnedFlag) == true then
+        return true
+    end
+    local dataFolder = localPlayer:FindFirstChild("Data")
+    local flagValue = dataFolder and dataFolder:FindFirstChild(twoh.EarnedFlag)
+    return flagValue ~= nil and flagValue:IsA("BoolValue") and flagValue.Value == true
+end
+
+function Extras.Twoh.getEnhanceLevel()
+    local twoh = Extras.Twoh
+    local maxAge = (twoh.EnhanceLevel or 0) >= twoh.RequiredLevel and 600 or 30
+    if os.clock() - twoh.EnhanceCheckedAt < maxAge then
+        return twoh.EnhanceLevel
+    end
+    twoh.EnhanceCheckedAt = os.clock()
+    local dataFolder = localPlayer:FindFirstChild("Data")
+    local inventoryFolder = dataFolder and dataFolder:FindFirstChild("Inventory")
+    local item = inventoryFolder and inventoryFolder:FindFirstChild(twoh.StyleName)
+    local identityValue = item and item:FindFirstChild("Identity")
+    local snapshotRemote = remotesFolder:FindFirstChild("RF_SpecEnchantGetSnapshot")
+    if not identityValue or not snapshotRemote then
+        return twoh.EnhanceLevel
+    end
+    local finished, reply = false, nil
+    task.spawn(function()
+        local ok, result = pcall(function()
+            return snapshotRemote:InvokeServer(identityValue.Value)
+        end)
+        if ok then
+            reply = result
+        end
+        finished = true
+    end)
+    local deadline = os.clock() + 5
+    while not finished and os.clock() < deadline do
+        task.wait(0.1)
+    end
+    if typeof(reply) == "table" and reply.ok ~= false then
+        local level = tonumber(reply.Level) or (typeof(reply.Snapshot) == "table" and tonumber(reply.Snapshot.Level)) or nil
+        if level then
+            twoh.EnhanceLevel = level
+        end
+    end
+    return twoh.EnhanceLevel
+end
+
+function Extras.Twoh.getStage()
+    local twoh = Extras.Twoh
+    if twoh.isEarned() or UnlockFarm.isQuestCompleted(twoh.Quests[5]) then
+        return "done"
+    end
+    if not twoh.hasWorld() then
+        return "needsWorld"
+    end
+    for index, questName in ipairs(twoh.Quests) do
+        if not UnlockFarm.isQuestCompleted(questName) then
+            if not UnlockFarm.getActiveQuestFolder(questName) then
+                if index == 1 then
+                    local level = twoh.getEnhanceLevel()
+                    if level and level < twoh.RequiredLevel then
+                        return "needsEnhance", questName, index
+                    end
+                end
+                return "accept", questName, index
+            end
+            if UnlockFarm.isQuestReadyToClaim(questName) then
+                return "claim", questName, index
+            end
+            if index == 1 then
+                return "dio", questName, index
+            end
+            return "ep" .. index, questName, index
+        end
+    end
+    return "done"
+end
+
+function Extras.Twoh.claim()
+    local twoh = Extras.Twoh
+    if Extras.PriorityRequest == nil then
+        Extras.PriorityRequest = "twoh"
+    end
+    if Extras.PriorityRequest ~= "twoh" then
+        twoh.WaitSince = nil
+        return false, Extras.PriorityRequest
+    end
+    if acquireMovement("twoh") then
+        twoh.WaitSince = nil
+        twoh.Idle = false
+        return true
+    end
+    twoh.WaitSince = twoh.WaitSince or os.clock()
+    local teleporting = (Extras.RevertWatch.ExpectUntil or 0) > os.clock()
+    local entering = movementOwner == "dungeon" or movementOwner == "araya"
+    if os.clock() - twoh.WaitSince > 8 and not teleporting and not entering then
+        stopTween()
+        movementOwner = nil
+    end
+    return false, movementOwner
+end
+
+function Extras.Twoh.releaseAll()
+    if Extras.PriorityRequest == "twoh" then
+        Extras.PriorityRequest = nil
+    end
+    Extras.Twoh.WaitSince = nil
+    Extras.Twoh.Idle = false
+    Extras.Twoh.stopFishing()
+    releaseMovement("twoh")
+end
+
+function Extras.Twoh.startFishing()
+    local twoh = Extras.Twoh
+    local fishingState = Extras.Fishing
+    if not Extras.TwohFishing and State.AutoFishEnabled and fishingState.Session and not fishingState.Finished then
+        local remote = Extras.getFishingRemote()
+        if remote then
+            Extras.releaseFishingSession(remote, fishingState.Session)
+        end
+        Extras.resetFishingRound()
+        task.wait(0.5)
+    end
+    if not twoh.FishStartedAt then
+        local fishing = Extras.Fishing
+        fishing.Caught = 0
+        fishing.Missed = 0
+        fishing.Rejects = 0
+        fishing.LastCatch = nil
+        fishing.AimPoint = nil
+        fishing.StartedAt = os.clock()
+        twoh.FishStartedAt = os.clock()
+    end
+    Extras.TwohFishing = true
+    Extras.TwohFishingThread = coroutine.running()
+end
+
+function Extras.Twoh.stopFishing()
+    local twoh = Extras.Twoh
+    if twoh.FishSpot and lockedTargetCFrame == twoh.FishSpot then
+        lockedTargetCFrame = nil
+    end
+    twoh.FishSpot = nil
+    if not Extras.TwohFishing then
+        return
+    end
+    Extras.TwohFishing = false
+    Extras.TwohFishingThread = nil
+    if not State.AutoFishEnabled and not Extras.DeepsharkFishing and not Extras.WhaleFishing then
+        Extras.stopFishing()
+    end
+end
+
+function Extras.Twoh.fail(reason)
+    local twoh = Extras.Twoh
+    twoh.Fails = (twoh.Fails or 0) + 1
+    if twoh.Fails >= 3 and twoh.isDelegatedOnly() then
+        twoh.Fails = 0
+        twoh.prestigeGiveUp(reason)
+        return
+    end
+    if twoh.Fails >= 3 then
+        twoh.Fails = 0
+        twoh.idle(reason .. " | retrying in 30s")
+        local resumeAt = os.clock() + 27
+        while twoh.isActive() and os.clock() < resumeAt do
+            task.wait(0.5)
+        end
+        return
+    end
+    twoh.status(string.format("%s (attempt %d/3)", reason, twoh.Fails))
+    task.wait(1)
+end
+
+function Extras.Twoh.applyStyle()
+    local twoh = Extras.Twoh
+    if not twoh.SavedCombat then
+        twoh.SavedCombat = {}
+        if not isItemEquipped(twoh.StyleName) then
+            local dataFolder = localPlayer:FindFirstChild("Data")
+            local currentStyle = dataFolder and dataFolder:FindFirstChild("CurrentStyle")
+            local previous = currentStyle and Extras.findInventoryItemByIdentity(currentStyle.Value) or nil
+            twoh.SavedCombat.Style = previous or "__none"
+            getgenv().HubTwohPrevStyle = twoh.SavedCombat.Style
+        elseif typeof(getgenv().HubTwohPrevStyle) == "string" then
+            twoh.SavedCombat.Style = getgenv().HubTwohPrevStyle
+        end
+    end
+    if not isItemEquipped(twoh.StyleName) then
+        equipInventoryItem(twoh.StyleName)
+    end
+end
+
+function Extras.Twoh.restoreStyle()
+    local twoh = Extras.Twoh
+    local saved = twoh.SavedCombat
+    if not saved then
+        local marker = getgenv().HubTwohPrevStyle
+        if marker == "__none" or (typeof(marker) == "string" and getInventoryAmount(marker) <= 0) then
+            getgenv().HubTwohPrevStyle = nil
+        elseif typeof(marker) == "string" and marker ~= twoh.StyleName and isItemEquipped(twoh.StyleName) and (twoh.RestoreTries or 0) < 3 then
+            twoh.RestoreTries = (twoh.RestoreTries or 0) + 1
+            if equipInventoryItem(marker) then
+                getgenv().HubTwohPrevStyle = nil
+                twoh.RestoreTries = 0
+            end
+        end
+        return
+    end
+    twoh.SavedCombat = nil
+    local previous = saved.Style
+    if previous and previous ~= "__none" and previous ~= twoh.StyleName and getInventoryAmount(previous) > 0 then
+        if equipInventoryItem(previous) then
+            getgenv().HubTwohPrevStyle = nil
+        end
+    else
+        getgenv().HubTwohPrevStyle = nil
+    end
+end
+
+function Extras.Twoh.stop(syncUI)
+    Extras.stopLoop("AutoTwohEnabled", "twoh")
+    Extras.Twoh.releaseAll()
+    Extras.Twoh.unlockF()
+    Extras.Twoh.restoreDungeonHelper()
+    if syncUI then
+        Extras.syncToggle("TwohToggle", false)
+    end
+    task.spawn(Extras.Twoh.restoreStyle)
+end
+
+function Extras.Twoh.prestigeGiveUp(reason)
+    local twoh = Extras.Twoh
+    twoh.PrestigeGiveUpUntil = os.clock() + 600
+    twoh.PrestigeGiveUpReason = tostring(reason)
+    twoh.PrestigeCheckUntil = nil
+    twoh.log("PRESTIGE GIVE UP " .. tostring(reason))
+    twoh.idle(tostring(reason) .. " | Prestige continues with other requirements for 10 min")
+end
+
+function Extras.Twoh.idle(message)
+    local twoh = Extras.Twoh
+    twoh.releaseAll()
+    twoh.Idle = true
+    twoh.restoreStyle()
+    twoh.status(message)
+    task.wait(3)
+end
+
+function Extras.Twoh.questNPCName(questName, index)
+    local twoh = Extras.Twoh
+    local questInfo = questData.Main[questName]
+    if index == 1 or typeof(questInfo) ~= "table" or typeof(questInfo.NPC) ~= "string" then
+        return twoh.NPCName
+    end
+    return questInfo.NPC
+end
+
+function Extras.Twoh.goToNPC(npcName)
+    local twoh = Extras.Twoh
+    return Extras.goToNPCAt(npcName, twoh.QuestNPCs[npcName] or twoh.NPCPosition, twoh.isActive, twoh.status)
+end
+
+function Extras.Twoh.inAcceptGrace(questName, index)
+    local twoh = Extras.Twoh
+    if index <= 1 then
+        return false
+    end
+    local seenAt = twoh.AcceptSeenAt[questName] or os.clock()
+    twoh.AcceptSeenAt[questName] = seenAt
+    return os.clock() - seenAt < twoh.AcceptGrace
+end
+
+function Extras.Twoh.acceptQuest(questName, index)
+    local twoh = Extras.Twoh
+    local npcName = twoh.questNPCName(questName, index)
+    local function accepted()
+        return UnlockFarm.getActiveQuestFolder(questName) ~= nil or UnlockFarm.isQuestCompleted(questName)
+    end
+    twoh.status("going to " .. npcName .. " to accept " .. questName)
+    local npc = twoh.goToNPC(npcName)
+    if not npc then
+        twoh.fail("cannot reach " .. npcName .. " to accept " .. questName)
+        return
+    end
+    if index > 1 then
+        invokeInput("Quest", "Accept", npc, questName)
+        task.wait(0.5)
+        if accepted() then
+            twoh.Fails = 0
+            twoh.status(questName .. " accepted (fallback Quest Accept)")
+            return
+        end
+    end
+    if npcName == twoh.NPCName and Extras.openArayaDialogue(npc) then
+        twoh.status("asking Dio about the road to Heaven")
+        Extras.pickArayaChoice("ask about the road to heaven", accepted)
+        Extras.pickArayaChoice("i am ready to walk it", accepted)
+        local deadline = os.clock() + 3
+        while not accepted() and os.clock() < deadline do
+            task.wait(0.2)
+        end
+    end
+    if accepted() then
+        twoh.Fails = 0
+        twoh.status(questName .. " accepted")
+    else
+        twoh.fail(questName .. " was not accepted | " .. tostring(State.LastNotifyText))
+    end
+end
+
+function Extras.Twoh.fightBoss(bossName, stopFn, label)
+    local twoh = Extras.Twoh
+    local entry = BossFarm.getSummonEntry(bossName)
+    if not entry then
+        twoh.fail("no summon entry for " .. bossName)
+        return
+    end
+    twoh.status(label)
+    local ticketsBefore, moneyBefore = getInventoryAmount("Boss Ticket"), getMoney()
+    local result = BossFarm.prepareAndKill(entry, function()
+        return twoh.isActive() and stopFn()
+    end, "twoh")
+    local progressed = result == true or BossFarm.isBossAlive(bossName) or getInventoryAmount("Boss Ticket") ~= ticketsBefore or getMoney() ~= moneyBefore
+    if progressed or not stopFn() then
+        twoh.Fails = 0
+    else
+        twoh.fail(bossName .. ": no progress | " .. tostring(State.LastNotifyText))
+    end
+end
+
+function Extras.Twoh.fightDio(questName)
+    local twoh = Extras.Twoh
+    twoh.fightBoss(twoh.BossName, function()
+        return UnlockFarm.getActiveQuestFolder(questName) ~= nil and not UnlockFarm.isQuestReadyToClaim(questName)
+    end, string.format("%s | kill Dio %d/1 | %d Boss Ticket", questName, Extras.getQuestProgress(questName), getInventoryAmount("Boss Ticket")))
+end
+
+Extras.Twoh.DiaryItem = "Heavenly Diary"
+Extras.Twoh.DiaryGoal = 5
+
+function Extras.Twoh.getDiaries(questName)
+    return math.max(Extras.getQuestProgress(questName), getInventoryAmount(Extras.Twoh.DiaryItem))
+end
+
+function Extras.Twoh.fishAt(hoverCFrame, label, stillValid)
+    local twoh = Extras.Twoh
+    local rootPart = getRoot()
+    if not rootPart then
+        task.wait(1)
+        return
+    end
+    if (hoverCFrame.Position - rootPart.Position).Magnitude > 30 then
+        twoh.stopFishing()
+        Extras.clearCombatLocks()
+        twoh.status(label .. " | flying there")
+        safeTravelTo(hoverCFrame, function()
+            return twoh.isActive() and (stillValid == nil or stillValid())
+        end)
+        rootPart = getRoot()
+        if not rootPart or (hoverCFrame.Position - rootPart.Position).Magnitude > 60 then
+            if stillValid == nil or stillValid() then
+                twoh.fail("could not reach the fishing spot (" .. label .. ")")
+            end
+            return
+        end
+        Extras.Fishing.AimPoint = nil
+    end
+    twoh.FishSpot = hoverCFrame
+    lockedTargetCFrame = hoverCFrame
+    twoh.startFishing()
+    local caughtBefore = Extras.Fishing.Caught
+    twoh.status(label .. " | " .. tostring(State.FishStatus))
+    Extras.runFishingCycle()
+    if Extras.Fishing.Caught > caughtBefore then
+        twoh.Fails = 0
+    elseif string.find(tostring(State.FishStatus), "no open water", 1, true) or string.find(tostring(State.FishStatus), "no fishing rod", 1, true) then
+        twoh.OpenSpot = nil
+        twoh.fail("fishing failed | " .. tostring(State.FishStatus))
+    end
+    twoh.status(label .. " | " .. tostring(State.FishStatus))
+end
+
+function Extras.Twoh.summonDeepshark(prefix)
+    local twoh = Extras.Twoh
+    twoh.stopFishing()
+    lockedTargetCFrame = nil
+    twoh.status(prefix .. " | taking Abyssal Bait to the open sea")
+    if not Extras.goToDeepSea(nil, "out to the open sea", twoh.isActive) then
+        twoh.fail("could not reach the open sea for the Ancient Deepshark")
+        return
+    end
+    if not Extras.enterSeaWater(twoh.isActive) then
+        twoh.fail("could not get into the water for the Ancient Deepshark")
+        return
+    end
+    twoh.status(prefix .. string.format(" | using Abyssal Bait (%d left)", getInventoryAmount(Extras.DeepsharkBait)))
+    local result, distance = Extras.useAbyssalBait()
+    if result == "summoned" then
+        twoh.Fails = 0
+        local deadline = os.clock() + 6
+        while twoh.isActive() and os.clock() < deadline and not Extras.getDeepsharkEnemy() do
+            task.wait(0.2)
+        end
+    elseif result == "alive" then
+        twoh.SharkBackoffUntil = os.clock() + 90
+        twoh.status(prefix .. " | an Ancient Deepshark is already hunting about " .. tostring(distance or "?") .. " studs away")
+        task.wait(1)
+    elseif result == "land" then
+        Extras.DeepSeaIndex = (Extras.DeepSeaIndex % #Extras.DeepSeaPoints) + 1
+        twoh.fail("Abyssal Bait: too close to land")
+    elseif result == "swim" then
+        task.wait(0.5)
+    else
+        twoh.fail("Abyssal Bait: " .. tostring(result))
+        if (twoh.Fails or 0) == 0 then
+            twoh.SharkBackoffUntil = os.clock() + 300
+        end
+    end
+end
+
+function Extras.Twoh.runDiaries(questName)
+    local twoh = Extras.Twoh
+    local prefix = string.format("EP2 diaries %d/%d", twoh.getDiaries(questName), twoh.DiaryGoal)
+    local function stillOnEP2()
+        return twoh.isActive() and UnlockFarm.getActiveQuestFolder(questName) ~= nil
+    end
+    local shark = Extras.getDeepsharkEnemy()
+    local rootPart = getRoot()
+    local sharkRoot = shark and shark:FindFirstChild("HumanoidRootPart")
+    if sharkRoot and rootPart and (sharkRoot.Position - rootPart.Position).Magnitude < 800 then
+        twoh.stopFishing()
+        twoh.status(prefix .. " | fighting the Ancient Deepshark (3% diary)")
+        farmMobWithAnchor(Extras.DeepsharkName, function()
+            return stillOnEP2() and shark.Parent ~= nil
+        end, true)
+        return
+    end
+    twoh.restoreStyle()
+    local whale = Extras.findWhaleIndicator()
+    if whale then
+        twoh.fishAt(CFrame.new(whale.Position + Vector3.new(40, 6, 0)), prefix .. " | whale zone (x2)", function()
+            return whale.Parent ~= nil and stillOnEP2()
+        end)
+        return
+    end
+    if getInventoryAmount(Extras.DeepsharkBait) > 0 and os.clock() >= (twoh.SharkBackoffUntil or 0) and next(Extras.DeepsharkRequesters) == nil then
+        twoh.summonDeepshark(prefix)
+        return
+    end
+    if not twoh.OpenSpot then
+        local origin = rootPart and rootPart.Position
+        local spot = origin and Extras.findOpenWaterSpot(origin)
+        if not spot then
+            twoh.fail("no open water found")
+            return
+        end
+        twoh.OpenSpot = CFrame.new(spot.X, 8, spot.Z)
+    end
+    twoh.fishAt(twoh.OpenSpot, prefix .. " | open water", stillOnEP2)
+end
+
+Extras.Twoh.RealmName = "Realm Beyond Heaven"
+Extras.Twoh.RealmDifficulty = "Easy"
+Extras.Twoh.KeyItem = "Realm Beyond Heaven Key"
+Extras.Twoh.KeyFarmTarget = 2
+Extras.Twoh.KeyBoss = "Chihora"
+Extras.Twoh.MoneyFloor = 500000
+Extras.Twoh.MoneyTarget = 3000000
+Extras.Twoh.StatePath = "LEGACY PIECE/twoh_state.json"
+Extras.Twoh.LogPath = "LEGACY PIECE/twoh_realm_log.txt"
+Extras.Twoh.MaxLoses = 3
+Extras.Twoh.MaxWatchdog = 3
+Extras.Twoh.ReplayWait = 25
+Extras.Twoh.DropDelay = 3
+Extras.Twoh.RealmStages = {
+    ep3 = { Label = "EP3 Seals" },
+    ep4 = { Label = "EP4 Echo" },
+    ep5 = { Label = "EP5 Proofs" },
+    prestige = { Label = "Realm Beyond Heaven" }
+}
+Extras.Twoh.WatchDrops = {
+    ["Realm Beyond Heaven Key"] = true,
+    ["Echo of the Rewritten Hour"] = true,
+    ["Fragment of Heaven"] = true,
+    ["Heavenly Chest"] = true,
+    ["Heaven Ascension Relic"] = true,
+    ["Stilled Shadow"] = true,
+    ["Frozen Time Core"] = true,
+    ["Chrono Echo"] = true
+}
+
+Extras.Twoh.Ep5Labels = { "FTC", "Relic", "Shadow", "Title", "Frag" }
+Extras.Twoh.MoneyPhaseCap = 1200
+Extras.Twoh.StuckSeconds = 900
+
+function Extras.Twoh.getEp5()
+    local twoh = Extras.Twoh
+    local questName = twoh.Quests[5]
+    local info = questData.Main[questName]
+    local objectives = typeof(info) == "table" and typeof(info.Objectives) == "table" and info.Objectives or {}
+    local progress = tonumber(Extras.getQuestProgress(questName)) or 0
+    local result = { Short = 0, List = {} }
+    for index = 1, #objectives do
+        local objective = objectives[index]
+        local have = math.floor(progress / (1000 ^ (index - 1))) % 1000
+        local need = tonumber(objective.Amount) or 0
+        local entry = { Target = objective.Target, Have = have, Need = need, Short = math.max(need - have, 0), Label = twoh.Ep5Labels[index] or tostring(objective.Target) }
+        result.List[index] = entry
+        result.Short = result.Short + entry.Short
+    end
+    return result
+end
+
+function Extras.Twoh.ep5Text(ep5)
+    local parts = {}
+    for _, entry in ipairs(ep5.List) do
+        if entry.Label ~= "Title" then
+            table.insert(parts, string.format("%s %d/%d", entry.Label, entry.Have, entry.Need))
+        elseif entry.Short > 0 then
+            table.insert(parts, string.format("Title 0/1 (pity %s)", tostring(localPlayer:GetAttribute("TitlePity_Dio_Heaven_Ascension") or 0)))
+        end
+    end
+    return table.concat(parts, " ")
+end
+
+function Extras.Twoh.ep5Prefix(ep5)
+    local twoh = Extras.Twoh
+    local runNumber = twoh.Run and twoh.Run.Number or tonumber(twoh.loadState().RunCount) or 0
+    return string.format("EP5 | %s | run %s | keys %d", twoh.ep5Text(ep5 or twoh.getEp5()), tostring(runNumber), getInventoryAmount(twoh.KeyItem))
+end
+
+function Extras.Twoh.ftcShort()
+    local first = Extras.Twoh.getEp5().List[1]
+    return first ~= nil and first.Short > 0
+end
+
+function Extras.Twoh.wantsRealmRun(stage)
+    if stage == "ep3" or stage == "ep4" then
+        return true
+    end
+    if stage ~= "ep5" then
+        return false
+    end
+    local ep5 = Extras.Twoh.getEp5()
+    if ep5.List[1] and ep5.List[1].Short > 0 then
+        return false
+    end
+    for index = 2, #ep5.List do
+        if ep5.List[index].Short > 0 then
+            return true
+        end
+    end
+    return false
+end
+
+function Extras.Twoh.moneyPhase(label)
+    local twoh = Extras.Twoh
+    local money = getMoney()
+    if not twoh.MoneyPhase and money < twoh.MoneyFloor then
+        twoh.MoneyPhase = true
+        twoh.MoneyPhaseStartedAt = os.clock()
+    end
+    if twoh.MoneyPhase and (money >= twoh.MoneyTarget or os.clock() - (twoh.MoneyPhaseStartedAt or 0) > twoh.MoneyPhaseCap) then
+        twoh.MoneyPhase = false
+        return false
+    end
+    if not twoh.MoneyPhase then
+        return false
+    end
+    local rank = Extras.getFireForceRank()
+    if rank == "" or rank == "None" then
+        twoh.MoneyPhase = false
+        if twoh.isDelegatedOnly() then
+            twoh.prestigeGiveUp(string.format("%s | money $%.2fM is below $%.1fM and Ambush is unavailable (Fire Force rank needed)", label, money / 1000000, twoh.MoneyFloor / 1000000))
+            return true
+        end
+        twoh.idle(string.format("%s | money $%.2fM is below $%.1fM and Ambush is unavailable (Fire Force rank needed) | waiting", label, money / 1000000, twoh.MoneyFloor / 1000000))
+        return true
+    end
+    local text = string.format("TWOH: %s | money $%.1fM/%.0fM | Ambush (%dm left in this phase)", label, money / 1000000, twoh.MoneyTarget / 1000000, math.max(0, math.floor((twoh.MoneyPhaseCap - (os.clock() - twoh.MoneyPhaseStartedAt)) / 60)))
+    if twoh.isDelegatedOnly() then
+        State.PrestigeStatus = "Prestige: " .. tostring(twoh.PrestigeLabel) .. " | " .. text
+    end
+    if not Extras.runAmbushDuty(function()
+        return twoh.isActive() and getMoney() < twoh.MoneyTarget
+    end, text) then
+        State.ExtraStatus = text .. " | waiting for the next ambush | " .. tostring(State.LastNotifyText)
+        task.wait(0.5)
+    end
+    return true
+end
+
+function Extras.Twoh.farmFTC(ep5)
+    local twoh = Extras.Twoh
+    local prefix = twoh.ep5Prefix(ep5)
+    if twoh.moneyPhase(prefix) then
+        return
+    end
+    twoh.fightBoss(twoh.BossName, twoh.ftcShort, string.format("%s | Dio for Frozen Time Core (15%%) | %d tickets", prefix, getInventoryAmount("Boss Ticket")))
+end
+
+function Extras.Twoh.claimEp5()
+    local twoh = Extras.Twoh
+    local questName = twoh.Quests[5]
+    twoh.status(twoh.ep5Prefix() .. " | all objectives met | claiming at Dio")
+    if twoh.goToNPC(twoh.NPCName) then
+        invokeInput("Quest", "Claim", questName)
+        task.wait(2)
+    end
+    if UnlockFarm.getActiveQuestFolder(questName) then
+        twoh.fail("EP5 objectives met but the claim was not accepted | " .. tostring(State.LastNotifyText))
+    end
+end
+
+function Extras.Twoh.loadState()
+    local saved = {}
+    pcall(function()
+        local decoded = httpService:JSONDecode(readfile(Extras.Twoh.StatePath))
+        if typeof(decoded) == "table" then
+            saved = decoded
+        end
+    end)
+    return saved
+end
+
+function Extras.Twoh.saveState(changes)
+    local saved = Extras.Twoh.loadState()
+    for key, value in pairs(changes) do
+        saved[key] = value
+    end
+    pcall(writefile, Extras.Twoh.StatePath, httpService:JSONEncode(saved))
+end
+
+function Extras.Twoh.log(text)
+    local line = os.date("%H:%M:%S") .. " " .. tostring(text) .. "\n"
+    local ok = pcall(appendfile, Extras.Twoh.LogPath, line)
+    if not ok then
+        pcall(writefile, Extras.Twoh.LogPath, line)
+    end
+end
+
+function Extras.Twoh.lockF()
+    local twoh = Extras.Twoh
+    if twoh.FLocked then
+        return
+    end
+    local rules = Combat.SkillRules[twoh.StyleName]
+    twoh.SavedFRule = { Had = rules ~= nil, Value = rules and rules.F or nil }
+    if not rules then
+        rules = {}
+        Combat.SkillRules[twoh.StyleName] = rules
+    end
+    rules.F = "never"
+    twoh.FLocked = true
+end
+
+function Extras.Twoh.unlockF()
+    local twoh = Extras.Twoh
+    if not twoh.FLocked then
+        return
+    end
+    twoh.FLocked = false
+    local saved = twoh.SavedFRule or {}
+    if saved.Had then
+        local rules = Combat.SkillRules[twoh.StyleName]
+        if rules then
+            rules.F = saved.Value
+        end
+    else
+        Combat.SkillRules[twoh.StyleName] = nil
+    end
+end
+
+function Extras.Twoh.connectFloorReset()
+    if not getgenv().HubTwohEnemyAddConnection then
+        getgenv().HubTwohEnemyAddConnection = enemiesFolder.ChildAdded:Connect(function()
+            State.LastBossSpawnAt = os.clock()
+        end)
+    end
+    if getgenv().HubTwohDungeonAttrConnection then
+        return
+    end
+    getgenv().HubTwohDungeonAttrConnection = workspaceService:GetAttributeChangedSignal("Dungeon"):Connect(function()
+        Extras.DungeonFloorLevel = nil
+        Extras.DungeonCeiling = nil
+    end)
+end
+
+function Extras.Twoh.muteDungeonHelper()
+    local connection = getgenv().HubDungeonConnection
+    if connection then
+        pcall(function()
+            connection:Disconnect()
+        end)
+        getgenv().HubDungeonConnection = nil
+        Extras.Twoh.HelperMuted = true
+    end
+end
+
+function Extras.Twoh.restoreDungeonHelper()
+    local twoh = Extras.Twoh
+    if not twoh.HelperMuted then
+        return
+    end
+    twoh.HelperMuted = false
+    pcall(function()
+        loadstring(Extras.DungeonHelperSource)()
+    end)
+end
+
+function Extras.Twoh.combatReady()
+    local types = State.FarmCombatTypes or {}
+    local dataFolder = localPlayer:FindFirstChild("Data")
+    local inventoryFolder = dataFolder and dataFolder:FindFirstChild("Inventory")
+    return types.Ability == true and inventoryFolder ~= nil and inventoryFolder:FindFirstChild("Araya") ~= nil
+end
+
+function Extras.Twoh.halt(reason)
+    local twoh = Extras.Twoh
+    twoh.HaltReason = reason
+    twoh.saveState({ Halt = reason })
+    twoh.log("HALT " .. reason)
+end
+
+function Extras.Twoh.getRealmEntry()
+    for _, entry in ipairs(Extras.Dungeons) do
+        if entry.Key == Extras.Twoh.RealmName then
+            return entry
+        end
+    end
+    return nil
+end
+
+function Extras.Twoh.stageLabel(stage)
+    local info = Extras.Twoh.RealmStages[stage or ""]
+    return info and info.Label or tostring(stage)
+end
+
+function Extras.Twoh.realmStatus(phase)
+    local twoh = Extras.Twoh
+    local run = twoh.Run
+    if twoh.isDelegatedOnly() then
+        twoh.status(string.format("Realm run %s | keys %d | wave %s/%s | %s", run and tostring(run.Number) or "-", getInventoryAmount(twoh.KeyItem), tostring(Extras.DungeonWave or "?"), tostring(Extras.DungeonMaxWave or "?"), tostring(phase)))
+        return
+    end
+    if twoh.Stage == "ep5" then
+        if os.clock() - (twoh.Ep5CachedAt or 0) > 2 then
+            twoh.Ep5Cached = twoh.getEp5()
+            twoh.Ep5CachedAt = os.clock()
+        end
+        twoh.status(string.format("%s | wave %s/%s | %s", twoh.ep5Prefix(twoh.Ep5Cached), tostring(Extras.DungeonWave or "?"), tostring(Extras.DungeonMaxWave or "?"), tostring(phase)))
+        return
+    end
+    twoh.status(string.format("%s | run %s | keys %d | wave %s/%s | %s", twoh.stageLabel(twoh.Stage), run and tostring(run.Number) or "-", getInventoryAmount(twoh.KeyItem), tostring(Extras.DungeonWave or "?"), tostring(Extras.DungeonMaxWave or "?"), tostring(phase)))
+end
+
+function Extras.Twoh.farmKeys(stage)
+    local twoh = Extras.Twoh
+    local keys = getInventoryAmount(twoh.KeyItem)
+    local money = getMoney()
+    local label = stage == "ep5" and twoh.ep5Prefix() or twoh.stageLabel(stage)
+    if twoh.moneyPhase(string.format("%s | keys %d/%d", label, keys, twoh.KeyFarmTarget)) then
+        return
+    end
+    local entry = BossFarm.getSummonEntry(twoh.KeyBoss)
+    if not entry then
+        twoh.fail("no summon entry for " .. twoh.KeyBoss)
+        return
+    end
+    twoh.status(string.format("%s | keys %d/%d | %s (18%%) | %d Boss Ticket | $%.1fM", label, keys, twoh.KeyFarmTarget, twoh.KeyBoss, getInventoryAmount("Boss Ticket"), money / 1000000))
+    local ticketsBefore = getInventoryAmount("Boss Ticket")
+    local result = BossFarm.prepareAndKill(entry, function()
+        return twoh.isActive() and getInventoryAmount(twoh.KeyItem) < twoh.KeyFarmTarget
+    end, "twoh")
+    local progressed = result == true or BossFarm.isBossAlive(twoh.KeyBoss) or getInventoryAmount("Boss Ticket") ~= ticketsBefore or getMoney() ~= money or getInventoryAmount(twoh.KeyItem) ~= keys
+    if progressed then
+        twoh.Fails = 0
+    else
+        twoh.fail(string.format("no keys and %s farming made no progress (tickets %d, money $%.1fM) | %s", twoh.KeyBoss, getInventoryAmount("Boss Ticket"), getMoney() / 1000000, tostring(State.LastNotifyText)))
+    end
+end
+
+function Extras.Twoh.enterRealm(stage)
+    local twoh = Extras.Twoh
+    local entry = twoh.getRealmEntry()
+    if not entry then
+        twoh.fail("Realm Beyond Heaven entry data missing")
+        return
+    end
+    local label = twoh.stageLabel(stage)
+    local keysBefore = getInventoryAmount(twoh.KeyItem)
+    twoh.saveState({ PendingKeys = keysBefore, PendingVia = "entry" })
+    twoh.log(string.format("ENTER stage=%s keys=%d", tostring(stage), keysBefore))
+    local started = Extras.enterSelectedDungeon(entry, twoh.isActive, function(message)
+        twoh.status(label .. " | keys " .. getInventoryAmount(twoh.KeyItem) .. " | " .. tostring(message))
+    end, twoh.applyStyle)
+    if not started and twoh.isActive() then
+        twoh.log(string.format("ENTER FAILED keys %d -> %d paid=%s portal=%s", keysBefore, getInventoryAmount(twoh.KeyItem), tostring(Extras.LastEntryKeyPaid), table.concat(Extras.LastPortalReplies or {}, ",")))
+        twoh.fail("Realm Beyond Heaven did not start | keys " .. keysBefore .. " -> " .. getInventoryAmount(twoh.KeyItem))
+    end
+end
+
+function Extras.Twoh.runRealmStage(stage)
+    local twoh = Extras.Twoh
+    if stage == "ep5" then
+        local ep5 = twoh.getEp5()
+        if ep5.List[1] and ep5.List[1].Short > 0 then
+            twoh.farmFTC(ep5)
+            return
+        end
+        if not twoh.wantsRealmRun(stage) then
+            twoh.claimEp5()
+            return
+        end
+    end
+    local keys = getInventoryAmount(twoh.KeyItem)
+    if keys <= 0 then
+        twoh.FarmingKeys = true
+    elseif keys >= twoh.KeyFarmTarget then
+        twoh.FarmingKeys = false
+    end
+    if twoh.FarmingKeys then
+        twoh.farmKeys(stage)
+        return
+    end
+    twoh.enterRealm(stage)
+end
+
+function Extras.Twoh.leaveRealm(reason)
+    local twoh = Extras.Twoh
+    twoh.releaseAll()
+    twoh.realmStatus("leaving (" .. tostring(reason) .. ")")
+    if os.clock() - (twoh.LeaveSentAt or 0) > 8 then
+        twoh.LeaveSentAt = os.clock()
+        twoh.log("LEAVE " .. tostring(reason))
+        Extras.expectTeleport(15)
+        local leaveRemote = eventsFolder and eventsFolder:FindFirstChild("DungeonLeave")
+        if leaveRemote then
+            pcall(function()
+                leaveRemote:FireServer()
+            end)
+        end
+    end
+    task.wait(1)
+end
+
+function Extras.Twoh.resetRunFields()
+    local twoh = Extras.Twoh
+    twoh.SealPrompt = nil
+    twoh.SealStartedAt = nil
+    twoh.SealRetries = 0
+    twoh.RealmIdleSince = nil
+    twoh.ClearAt = nil
+    twoh.ReplayFailed = false
+    twoh.LeaveSentAt = nil
+    twoh.LastProgressAt = os.clock()
+    twoh.ProgressSignature = nil
+    twoh.LastPersistAt = 0
+end
+
+function Extras.Twoh.persistRun()
+    local twoh = Extras.Twoh
+    local run = twoh.Run
+    if not run or run.Finished then
+        return
+    end
+    twoh.LastPersistAt = os.clock()
+    twoh.saveState({
+        ActiveRun = {
+            Id = run.Id,
+            Number = run.Number,
+            JobId = game.JobId,
+            StartedAtTime = run.StartedAtTime,
+            KeysBefore = run.KeysBefore,
+            KeysAtStart = run.KeysAtStart,
+            Stage = run.Stage,
+            Via = run.Via,
+            MaxYOverFloor = math.floor(run.MaxYOverFloor),
+            Seals = run.Seals,
+            Watchdog = run.Watchdog,
+            Deaths = run.Deaths,
+            ReplayVoteDelay = run.ReplayVoteDelay,
+            SealHold = twoh.SealHoldSeen,
+            Resumed = run.Resumed,
+            Drops = State.TwohRunDrops and State.TwohRunDrops.Items or {},
+            UpdatedAt = os.time()
+        }
+    })
+end
+
+function Extras.Twoh.recordRun(record, saved)
+    local twoh = Extras.Twoh
+    local runs = typeof(saved.Runs) == "table" and saved.Runs or {}
+    for _, existing in ipairs(runs) do
+        if record.Id and existing.Id == record.Id then
+            return false
+        end
+    end
+    table.insert(runs, record)
+    while #runs > 60 do
+        table.remove(runs, 1)
+    end
+    local totals = typeof(saved.Totals) == "table" and saved.Totals or {}
+    totals.Runs = (tonumber(totals.Runs) or 0) + 1
+    totals[record.Result] = (tonumber(totals[record.Result]) or 0) + 1
+    totals.Deaths = (tonumber(totals.Deaths) or 0) + (tonumber(record.Deaths) or 0)
+    totals.KeyDelta = (tonumber(totals.KeyDelta) or 0) + (tonumber(record.KeyDelta) or 0)
+    totals.Seconds = (tonumber(totals.Seconds) or 0) + (tonumber(record.Duration) or 0)
+    totals.Drops = typeof(totals.Drops) == "table" and totals.Drops or {}
+    for itemName, amount in pairs(record.Drops or {}) do
+        totals.Drops[itemName] = (tonumber(totals.Drops[itemName]) or 0) + (tonumber(amount) or 0)
+    end
+    saved.Runs = runs
+    saved.Totals = totals
+    return true
+end
+
+function Extras.Twoh.beginRun(resumeOnly)
+    local twoh = Extras.Twoh
+    local saved = twoh.loadState()
+    local active = saved.ActiveRun
+    if typeof(active) == "table" and active.JobId == game.JobId and os.time() - (tonumber(active.UpdatedAt) or 0) < 900 then
+        twoh.Run = {
+            Id = active.Id,
+            Number = active.Number,
+            StartedAtTime = active.StartedAtTime,
+            StartedAt = os.clock() - math.max(0, os.time() - (tonumber(active.StartedAtTime) or os.time())),
+            KeysBefore = active.KeysBefore,
+            KeysAtStart = active.KeysAtStart,
+            Stage = active.Stage or twoh.Stage,
+            Via = active.Via,
+            MaxYOverFloor = tonumber(active.MaxYOverFloor) or 0,
+            Seals = typeof(active.Seals) == "table" and active.Seals or {},
+            Watchdog = tonumber(active.Watchdog) or 0,
+            Deaths = tonumber(active.Deaths) or 0,
+            ReplayVoteDelay = active.ReplayVoteDelay,
+            Resumed = (tonumber(active.Resumed) or 0) + 1
+        }
+        State.TwohRunDrops = { Watch = twoh.WatchDrops, Items = typeof(active.Drops) == "table" and active.Drops or {} }
+        twoh.SealHoldSeen = active.SealHold == true
+        twoh.ReplaySentAt = nil
+        twoh.resetRunFields()
+        twoh.persistRun()
+        twoh.log(string.format("RUN %d RESUMED after a reload (resume #%d)", twoh.Run.Number, twoh.Run.Resumed))
+        return true
+    end
+    if typeof(active) == "table" and active.Id then
+        local keysNow = getInventoryAmount(twoh.KeyItem)
+        twoh.recordRun({
+            Id = active.Id,
+            Run = active.Number,
+            Stage = active.Stage,
+            Result = "Abandoned",
+            Via = active.Via,
+            Duration = math.max(0, (tonumber(active.UpdatedAt) or os.time()) - (tonumber(active.StartedAtTime) or os.time())),
+            KeysBefore = active.KeysBefore,
+            KeysAfter = keysNow,
+            KeyDelta = 0,
+            Drops = active.Drops,
+            Seals = active.Seals,
+            Deaths = active.Deaths,
+            MaxYOverFloor = active.MaxYOverFloor,
+            At = os.time()
+        }, saved)
+        saved.ActiveRun = false
+        pcall(writefile, twoh.StatePath, httpService:JSONEncode(saved))
+        twoh.log(string.format("RUN %s recorded as Abandoned (other server or stale)", tostring(active.Number)))
+    end
+    if resumeOnly then
+        return false
+    end
+    saved = twoh.loadState()
+    local number = (tonumber(saved.RunCount) or 0) + 1
+    local keysNow = getInventoryAmount(twoh.KeyItem)
+    local via = typeof(saved.PendingVia) == "string" and saved.PendingVia or "resume"
+    twoh.Run = {
+        Id = string.format("%s:%d:%d", tostring(game.JobId), number, os.time()),
+        Number = number,
+        StartedAtTime = os.time(),
+        StartedAt = os.clock(),
+        KeysBefore = tonumber(saved.PendingKeys) or keysNow,
+        KeysAtStart = keysNow,
+        Stage = twoh.Stage,
+        Via = via,
+        MaxYOverFloor = 0,
+        Seals = {},
+        Watchdog = 0,
+        Deaths = 0,
+        Resumed = 0,
+        ReplayVoteDelay = twoh.ReplaySentAt and math.floor((os.clock() - twoh.ReplaySentAt) * 10) / 10 or nil
+    }
+    State.TwohRunDrops = { Watch = twoh.WatchDrops, Items = {} }
+    twoh.SealHoldSeen = false
+    twoh.ReplaySentAt = nil
+    twoh.resetRunFields()
+    twoh.saveState({ RunCount = number, PendingKeys = false, PendingVia = false })
+    twoh.persistRun()
+    twoh.log(string.format("RUN %d START stage=%s via=%s keysBefore=%s keysNow=%d replayVoteDelay=%s", number, tostring(twoh.Stage), via, tostring(twoh.Run.KeysBefore), keysNow, tostring(twoh.Run.ReplayVoteDelay)))
+    return true
+end
+
+function Extras.Twoh.finishRun(result)
+    local twoh = Extras.Twoh
+    local run = twoh.Run
+    if not run or run.Finished then
+        return
+    end
+    run.Finished = true
+    local keysAfter = getInventoryAmount(twoh.KeyItem)
+    local saved = twoh.loadState()
+    twoh.recordRun({
+        Id = run.Id,
+        Run = run.Number,
+        Stage = run.Stage,
+        Result = result,
+        Via = run.Via,
+        Duration = math.floor(os.clock() - run.StartedAt),
+        KeysBefore = run.KeysBefore,
+        KeysAfter = keysAfter,
+        KeyDelta = keysAfter - (run.KeysBefore or keysAfter),
+        Drops = State.TwohRunDrops and State.TwohRunDrops.Items or {},
+        Seals = run.Seals,
+        SealHold = twoh.SealHoldSeen,
+        MaxYOverFloor = math.floor(run.MaxYOverFloor),
+        Watchdog = run.Watchdog,
+        Deaths = run.Deaths,
+        ReplayVoteDelay = run.ReplayVoteDelay,
+        Resumed = run.Resumed,
+        At = os.time()
+    }, saved)
+    local loseStreak = result == "Lose" and (tonumber(saved.LoseStreak) or 0) + 1 or 0
+    saved.LoseStreak = loseStreak
+    saved.ActiveRun = false
+    pcall(writefile, twoh.StatePath, httpService:JSONEncode(saved))
+    twoh.log(string.format("RUN %d END %s %ds keys %s -> %d deaths %d maxY+%d watchdog %d seals %d resumed %d", run.Number, result, math.floor(os.clock() - run.StartedAt), tostring(run.KeysBefore), keysAfter, run.Deaths, math.floor(run.MaxYOverFloor), run.Watchdog, #run.Seals, run.Resumed or 0))
+    if loseStreak >= twoh.MaxLoses then
+        twoh.halt(string.format("lost the Realm Beyond Heaven %d times in a row", loseStreak))
+    end
+end
+
+function Extras.Twoh.sampleRealm()
+    local twoh = Extras.Twoh
+    local run = twoh.Run
+    if not run or os.clock() - (twoh.LastSampleAt or 0) < 1 then
+        return
+    end
+    twoh.LastSampleAt = os.clock()
+    if os.clock() - (twoh.LastPersistAt or 0) > 10 then
+        twoh.persistRun()
+    end
+    local rootPart, humanoid = getRoot()
+    if humanoid and humanoid.Health <= 0 then
+        if not twoh.WasDead then
+            run.Deaths = run.Deaths + 1
+            twoh.log(string.format("RUN %d DEATH", run.Number))
+        end
+        twoh.WasDead = true
+    else
+        twoh.WasDead = false
+    end
+    if workspaceService:GetAttribute("DungeonWaveHold") == true then
+        twoh.SealHoldSeen = true
+    end
+    if not rootPart then
+        return
+    end
+    local floorY = Extras.DungeonFloorLevel
+    local over = floorY and (rootPart.Position.Y - floorY) or 0
+    if over > run.MaxYOverFloor then
+        run.MaxYOverFloor = over
+    end
+    local movers = {}
+    for _, child in ipairs(rootPart:GetChildren()) do
+        if child:IsA("BodyMover") or child:IsA("Constraint") then
+            table.insert(movers, child.Name)
+        end
+    end
+    local character = localPlayer.Character
+    twoh.log(string.format("run %d Y %.0f (+%.0f) target %s acting %s movers [%s] %s", run.Number, rootPart.Position.Y, over, lockedEnemyRoot and string.format("%.0f", lockedEnemyRoot.Position.Y) or "-", tostring(character and character:FindFirstChild("Acting") ~= nil), table.concat(movers, ","), tostring(State.ExtraStatus)))
+end
+
+function Extras.Twoh.checkHeight()
+    local twoh = Extras.Twoh
+    local rootPart = getRoot()
+    local floorY = Extras.DungeonFloorLevel
+    if not rootPart or not floorY then
+        return false
+    end
+    local over = rootPart.Position.Y - floorY
+    if over <= 60 then
+        twoh.LastGoodCFrame = rootPart.CFrame
+    end
+    if over <= 250 then
+        return false
+    end
+    local run = twoh.Run
+    if run then
+        run.Watchdog = run.Watchdog + 1
+    end
+    twoh.log(string.format("WATCHDOG Y %.0f (+%.0f) | returning", rootPart.Position.Y, over))
+    Extras.clearCombatLocks()
+    lockedEnemyRoot = nil
+    lockedTargetCFrame = nil
+    local target = twoh.LastGoodCFrame or CFrame.new(rootPart.Position.X, floorY + 8, rootPart.Position.Z)
+    twoh.realmStatus(string.format("height watchdog (+%.0f) | returning down", over))
+    safeTravelTo(target, function()
+        return twoh.isActive()
+    end)
+    if run and run.Watchdog >= twoh.MaxWatchdog then
+        twoh.halt("height watchdog fired " .. run.Watchdog .. " times in one run")
+    end
+    return true
+end
+
+function Extras.Twoh.handleRunEnd(status)
+    local twoh = Extras.Twoh
+    twoh.ClearAt = twoh.ClearAt or os.clock()
+    if os.clock() - twoh.ClearAt < twoh.DropDelay then
+        twoh.realmStatus(status .. " | collecting drops")
+        task.wait(0.5)
+        return
+    end
+    if twoh.Run and not twoh.Run.Finished then
+        twoh.finishRun(status)
+        if getInventoryAmount("Heavenly Chest") > 0 then
+            local opened = AutoChest.openChest("Heavenly Chest")
+            twoh.log("opened Heavenly Chest x" .. tostring(opened) .. " | keys now " .. getInventoryAmount(twoh.KeyItem))
+        end
+    end
+    if twoh.HaltReason then
+        twoh.leaveRealm(twoh.HaltReason)
+        return
+    end
+    local stage = twoh.getStage()
+    local delegatedOnly = twoh.isDelegatedOnly()
+    local wantsRuns = (delegatedOnly and twoh.prestigeNeed() ~= nil) or (not delegatedOnly and twoh.wantsRealmRun(stage))
+    local keys = getInventoryAmount(twoh.KeyItem)
+    if wantsRuns and keys >= 1 and not twoh.ReplayFailed then
+        if not twoh.ReplaySentAt then
+            twoh.ReplaySentAt = os.clock()
+            twoh.saveState({ PendingKeys = keys, PendingVia = "replay" })
+            twoh.log(string.format("REPLAY vote sent keys=%d", keys))
+            local syncRemote = eventsFolder and eventsFolder:FindFirstChild("DungeonInsideSync")
+            if syncRemote then
+                pcall(function()
+                    syncRemote:FireServer("ReplayVote")
+                end)
+            end
+        elseif os.clock() - twoh.ReplaySentAt > twoh.ReplayWait then
+            twoh.ReplayFailed = true
+            twoh.log(string.format("REPLAY no new Vote within %ds | keys %d", twoh.ReplayWait, getInventoryAmount(twoh.KeyItem)))
+            twoh.saveState({ PendingKeys = false, PendingVia = false })
+        end
+        twoh.realmStatus(status .. " | replay voted, waiting for the next run")
+        task.wait(0.5)
+        return
+    end
+    local reason = "replay did not start"
+    if not wantsRuns and delegatedOnly then
+        reason = "Prestige has enough Dio Heaven Ascension kills"
+    elseif not wantsRuns then
+        reason = (stage == "ep5" and twoh.ftcShort()) and "Frozen Time Core short | Dio between runs" or ("stage " .. tostring(stage) .. " needs no more runs")
+    elseif keys < 1 then
+        reason = "no keys left"
+    end
+    twoh.leaveRealm(reason)
+end
+
+function Extras.Twoh.findSealPrompt()
+    local islands = workspaceService:FindFirstChild("Islands")
+    local realm = islands and islands:FindFirstChild(Extras.Twoh.RealmName)
+    local inner = realm and realm:FindFirstChild(Extras.Twoh.RealmName)
+    local seals = inner and inner:FindFirstChild("Chrono Seal")
+    if not seals then
+        return nil
+    end
+    for _, prompt in ipairs(seals:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") and prompt.Enabled then
+            return prompt
+        end
+    end
+    return nil
+end
+
+function Extras.Twoh.anyLivingEnemy()
+    for _, enemy in ipairs(enemiesFolder:GetChildren()) do
+        if isLivingEnemy(enemy) then
+            return true
+        end
+    end
+    return false
+end
+
+function Extras.Twoh.holdTheWorld()
+    local twoh = Extras.Twoh
+    local character = localPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local backpack = localPlayer:FindFirstChild("Backpack")
+    local tool = character and (character:FindFirstChild(twoh.StyleName) or (backpack and backpack:FindFirstChild(twoh.StyleName)))
+    if not tool or not humanoid then
+        twoh.applyStyle()
+        return nil
+    end
+    if tool.Parent ~= character then
+        humanoid:EquipTool(tool)
+        local deadline = os.clock() + 0.5
+        while tool.Parent ~= character and os.clock() < deadline do
+            task.wait(0.03)
+        end
+    end
+    return tool.Parent == character and tool or nil
+end
+
+function Extras.Twoh.windowLeft()
+    local untilAt = State.TwohZaWarudoUntil
+    return untilAt and (untilAt - os.clock()) or 0
+end
+
+function Extras.Twoh.castZaWarudo(aimPosition)
+    local twoh = Extras.Twoh
+    local tool = twoh.holdTheWorld()
+    if not tool then
+        return false
+    end
+    local character = localPlayer.Character
+    local actingDeadline = os.clock() + 1.5
+    while character and (character:FindFirstChild("Acting") or character:FindFirstChild("Stunned")) and os.clock() < actingDeadline do
+        task.wait(0.03)
+    end
+    local readyAt = State.SkillCooldowns[twoh.StyleName .. "|F"] or 0
+    State.TwohZaWarudoUntil = nil
+    twoh.LastCastAt = os.clock()
+    pcall(function()
+        inputEvent:FireServer("Tool", tool, "F", aimPosition)
+    end)
+    local deadline = os.clock() + 1.6
+    while os.clock() < deadline do
+        if twoh.windowLeft() > 0 then
+            return true
+        end
+        if (State.SkillCooldowns[twoh.StyleName .. "|F"] or 0) > readyAt + 1 then
+            if not State.TwohZaWarudoUntil then
+                State.TwohZaWarudoUntil = os.clock() + 9
+            end
+            return true
+        end
+        task.wait(0.03)
+    end
+    return false
+end
+
+function Extras.Twoh.stillSeal(prompt)
+    local twoh = Extras.Twoh
+    local holder = prompt.Parent
+    local part = holder and (holder:IsA("BasePart") and holder or prompt:FindFirstAncestorWhichIsA("BasePart"))
+    if not part then
+        task.wait(0.2)
+        return
+    end
+    local sealName = holder.Parent and holder.Parent.Name or "?"
+    local questName = twoh.Quests[3]
+    if twoh.SealPrompt ~= prompt then
+        twoh.SealPrompt = prompt
+        twoh.SealStartedAt = os.clock()
+        twoh.SealRetries = 0
+    end
+    if os.clock() - twoh.SealStartedAt > 70 then
+        twoh.SealRetries = (twoh.SealRetries or 0) + 1
+        twoh.SealStartedAt = os.clock()
+        twoh.log(string.format("SEAL %s no progress for 70s (retry %d) | last reply: %s", sealName, twoh.SealRetries, tostring(State.LastNotifyText)))
+        if twoh.SealRetries >= 3 then
+            twoh.finishRun("SealStuck")
+            twoh.ReplayFailed = true
+            twoh.leaveRealm("seal stuck")
+            return
+        end
+    end
+    local rootPart = getRoot()
+    if not rootPart then
+        task.wait(0.2)
+        return
+    end
+    local standCFrame = CFrame.new(part.Position + Vector3.new(0, 4, 3))
+    local distance = (rootPart.Position - part.Position).Magnitude
+    local speed = math.max(tonumber(State.TweenSpeed) or 60, 1)
+    local windowLeft = twoh.windowLeft()
+    local stopAt = State.TwohZaWarudoUntil and (State.TwohZaWarudoUntil - 9) or nil
+
+    if windowLeft <= 0.3 then
+        local cooldownLeft = (State.SkillCooldowns[twoh.StyleName .. "|F"] or 0) - workspaceService:GetServerTimeNow() + 0.25
+        local reachable = distance / speed + 1.4 < 8.3
+        if cooldownLeft <= 0 and reachable then
+            twoh.realmStatus(string.format("casting Za Warudo for Chrono Seal %s (%.0f studs away)", sealName, distance))
+            if twoh.castZaWarudo(part.Position) then
+                twoh.SealCastAt = twoh.LastCastAt
+                return
+            end
+            twoh.realmStatus("Chrono Seal " .. sealName .. ": Za Warudo did not start | retrying")
+            task.wait(0.2)
+            return
+        end
+        if distance > 7 then
+            Extras.clearCombatLocks()
+            twoh.realmStatus(string.format("moving to Chrono Seal %s | Za Warudo in %.0fs", sealName, math.max(cooldownLeft, 0)))
+            safeTravelTo(standCFrame, function()
+                return twoh.isActive() and prompt.Enabled
+            end)
+        end
+        lockedEnemyRoot = nil
+        lockedTargetCFrame = standCFrame
+        if cooldownLeft > 0 then
+            twoh.holdTheWorld()
+            twoh.realmStatus(string.format("at Chrono Seal %s | Za Warudo ready in %.1fs", sealName, cooldownLeft))
+            task.wait(math.clamp(cooldownLeft, 0.03, 0.25))
+        end
+        return
+    end
+
+    if distance > 7 then
+        Extras.clearCombatLocks()
+        twoh.realmStatus(string.format("racing to Chrono Seal %s | time stop %.1fs left", sealName, windowLeft))
+        safeTravelTo(standCFrame, function()
+            return twoh.isActive() and prompt.Enabled and twoh.windowLeft() > 0.2
+        end)
+        rootPart = getRoot()
+        if not rootPart then
+            return
+        end
+        distance = (rootPart.Position - part.Position).Magnitude
+    end
+    lockedEnemyRoot = nil
+    lockedTargetCFrame = standCFrame
+    if distance > 9 then
+        twoh.realmStatus(string.format("Chrono Seal %s: %.0f studs away when the time stop ended", sealName, distance))
+        return
+    end
+    if stopAt and os.clock() < stopAt + 0.5 then
+        task.wait(stopAt + 0.5 - os.clock())
+    end
+    if twoh.windowLeft() <= 0.1 then
+        return
+    end
+    local before = Extras.getQuestProgress(questName)
+    local ep3Active = UnlockFarm.getActiveQuestFolder(questName) ~= nil
+    local firedAt = os.clock()
+    local notifyBefore = State.LastNotifyTime or 0
+    pcall(fireproximityprompt, prompt)
+    local function sealed()
+        if not prompt.Enabled or prompt.Parent == nil then
+            return true
+        end
+        if State.LastObtain == "Chrono Echo" and (State.LastObtainTime or 0) >= firedAt then
+            return true
+        end
+        if (State.LastBossSpawnAt or 0) >= firedAt then
+            return true
+        end
+        return ep3Active and Extras.getQuestProgress(questName) > before
+    end
+    local verifyDeadline = os.clock() + 1.2
+    while os.clock() < verifyDeadline and not sealed() do
+        task.wait(0.03)
+    end
+    if sealed() then
+        twoh.Fails = 0
+        local acceptedAt = os.clock()
+        local enabledAt = twoh.SealEnabledAt or twoh.SealStartedAt or acceptedAt
+        local record = {
+            Seal = sealName,
+            Seconds = math.floor((acceptedAt - enabledAt) * 10) / 10,
+            FromClear = math.floor((acceptedAt - (twoh.SealStartedAt or acceptedAt)) * 10) / 10,
+            CastToAccept = twoh.SealCastAt and math.floor((acceptedAt - twoh.SealCastAt) * 10) / 10 or nil,
+            Window = "stop"
+        }
+        if twoh.Run then
+            table.insert(twoh.Run.Seals, record)
+            twoh.persistRun()
+        end
+        twoh.log(string.format("SEAL %s stilled %.1fs after it enabled, %.1fs after the area was clear (cast to accept %s)", sealName, record.Seconds, record.FromClear, tostring(record.CastToAccept)))
+        twoh.SealPrompt = nil
+        twoh.SealCastAt = nil
+        lockedTargetCFrame = nil
+        twoh.realmStatus("Chrono Seal " .. sealName .. " stilled | the shadow comes")
+    else
+        local reply = (State.LastNotifyTime or 0) > notifyBefore and tostring(State.LastNotifyText) or "no reply"
+        twoh.log(string.format("SEAL %s prompt not accepted (%s) | window %.1fs left", sealName, reply, twoh.windowLeft()))
+        twoh.realmStatus(string.format("Chrono Seal %s: prompt not accepted (%s) | retrying", sealName, reply))
+    end
+end
+
+function Extras.Twoh.runRealm()
+    local twoh = Extras.Twoh
+    Extras.connectAutoDungeon()
+    pcall(Extras.queueArayaReload)
+    twoh.muteDungeonHelper()
+    twoh.Stage = twoh.getStage()
+    local status = twoh.DungeonStatus
+    local ended = status == "Clear" or status == "Lose"
+    if twoh.Run and twoh.Run.Finished and not ended then
+        twoh.Run = nil
+    end
+    if not twoh.Run then
+        twoh.beginRun(ended)
+    end
+    twoh.sampleRealm()
+    if ended then
+        twoh.handleRunEnd(status)
+        return
+    end
+    if twoh.Stage == "ep5" and not twoh.isDelegatedOnly() and not twoh.wantsRealmRun("ep5") then
+        twoh.finishRun("LeftEarly")
+        twoh.ReplayFailed = true
+        twoh.leaveRealm(twoh.ftcShort() and "only Frozen Time Core is missing | going to Dio" or "EP5 needs nothing from the realm")
+        return
+    end
+    local signature = string.format("%s|%s|%d|%d", tostring(status), tostring(Extras.DungeonWave), #enemiesFolder:GetChildren(), #(twoh.Run and twoh.Run.Seals or {}))
+    if signature ~= twoh.ProgressSignature then
+        twoh.ProgressSignature = signature
+        twoh.LastProgressAt = os.clock()
+    elseif os.clock() - (twoh.LastProgressAt or os.clock()) > twoh.StuckSeconds then
+        twoh.log("STUCK no wave or status progress for " .. twoh.StuckSeconds .. "s")
+        twoh.finishRun("Stuck")
+        twoh.ReplayFailed = true
+        twoh.leaveRealm("no progress for 15 minutes")
+        return
+    end
+    if twoh.HaltReason then
+        twoh.leaveRealm(twoh.HaltReason)
+        return
+    end
+    if not twoh.isDelegatedOnly() and not twoh.combatReady() then
+        twoh.releaseAll()
+        twoh.realmStatus("set Auto Farm combat type to Ability (Araya)")
+        task.wait(2)
+        return
+    end
+    local owned, holder = twoh.claim()
+    if not owned then
+        twoh.realmStatus("waiting for " .. tostring(holder))
+        task.wait(0.5)
+        return
+    end
+    twoh.applyStyle()
+    if twoh.checkHeight() then
+        releaseMovement("twoh")
+        return
+    end
+    local sealPrompt = twoh.findSealPrompt()
+    if sealPrompt ~= twoh.SeenSealPrompt then
+        twoh.SeenSealPrompt = sealPrompt
+        twoh.SealEnabledAt = sealPrompt and os.clock() or nil
+    end
+    if sealPrompt and not twoh.anyLivingEnemy() then
+        twoh.stillSeal(sealPrompt)
+        releaseMovement("twoh")
+        return
+    end
+    local rootPart = getRoot()
+    local target = rootPart and Extras.pickDungeonTarget(rootPart)
+    if target then
+        twoh.RealmIdleSince = nil
+        twoh.realmStatus("fighting " .. target.Name)
+        farmMobWithAnchor(target.Name, function()
+            return twoh.isActive() and target.Parent ~= nil
+        end, true)
+    else
+        local now = os.clock()
+        twoh.RealmIdleSince = twoh.RealmIdleSince or now
+        local tooHigh = now - (Extras.HighEnemySeenAt or 0) < 2
+        twoh.realmStatus(tooHigh and "enemy out of reach (too high) | waiting" or (tostring(status) .. " | waiting for enemies"))
+        if now - twoh.RealmIdleSince >= 12 and now - (twoh.RealmNudgeAt or 0) >= 10 then
+            twoh.RealmNudgeAt = now
+            local syncRemote = eventsFolder and eventsFolder:FindFirstChild("DungeonInsideSync")
+            if syncRemote then
+                pcall(function()
+                    syncRemote:FireServer("Vote", twoh.RealmDifficulty)
+                end)
+            end
+        end
+        task.wait(0.2)
+    end
+    releaseMovement("twoh")
+end
+
+function Extras.Twoh.runCycle()
+    local twoh = Extras.Twoh
+    twoh.lockF()
+    twoh.connectFloorReset()
+    local ok, errorMessage = pcall(twoh.runStep)
+    if not ok then
+        twoh.unlockF()
+        twoh.releaseAll()
+        twoh.status("error: " .. tostring(errorMessage))
+        twoh.log("ERROR " .. tostring(errorMessage))
+        task.wait(2)
+    end
+end
+
+function Extras.Twoh.runStep()
+    local twoh = Extras.Twoh
+    local dungeonName = workspaceService:GetAttribute("Dungeon")
+    if dungeonName == twoh.RealmName then
+        twoh.runRealm()
+        return
+    end
+    if dungeonName ~= nil then
+        twoh.releaseAll()
+        twoh.status("inside another dungeon (" .. tostring(dungeonName) .. ") | waiting")
+        task.wait(2)
+        return
+    end
+    local halt = twoh.loadState().Halt
+    if typeof(halt) == "string" and halt ~= "" then
+        twoh.stop(true)
+        twoh.status("halted: " .. halt .. " | turn Auto TWOH on again to resume")
+        return
+    end
+    local stage, questName, index = twoh.getStage()
+    if stage ~= twoh.Stage then
+        twoh.Fails = 0
+        twoh.FishStartedAt = nil
+        if twoh.Stage == "ep2" then
+            twoh.stopFishing()
+        end
+    end
+    twoh.Stage = stage
+    if stage == "done" then
+        twoh.stop(true)
+        twoh.status("obtained! B - Over Heaven unlocked")
+        return
+    end
+    if stage == "needsWorld" then
+        twoh.idle("The World (Style) is not owned | get it first")
+        return
+    end
+    if stage == "needsEnhance" then
+        twoh.idle(string.format("The World is +%d | needs +%d before Earthly Proofs", twoh.EnhanceLevel or 0, twoh.RequiredLevel))
+        return
+    end
+    local realmStage = twoh.RealmStages[stage] ~= nil
+    if stage ~= "accept" and stage ~= "claim" and stage ~= "dio" and stage ~= "ep2" and not realmStage then
+        twoh.idle(string.format("%s (next step) | %s active", twoh.NextSteps[index] or stage, tostring(questName)))
+        return
+    end
+    if (stage == "dio" or realmStage) and not twoh.combatReady() then
+        twoh.idle("set Auto Farm combat type to Ability (Araya)")
+        return
+    end
+    twoh.runQuestStage(stage, questName, index)
+end
+
+function Extras.Twoh.runQuestStage(stage, questName, index)
+    local twoh = Extras.Twoh
+    local realmStage = twoh.RealmStages[stage] ~= nil
+    if stage == "accept" and twoh.inAcceptGrace(questName, index) then
+        twoh.releaseAll()
+        twoh.status(questName .. " should auto-accept | waiting")
+        task.wait(1)
+        return
+    end
+    local owned, holder = twoh.claim()
+    if not owned then
+        twoh.status("waiting for " .. tostring(holder) .. " to hand over movement")
+        task.wait(0.5)
+        return
+    end
+    if stage == "accept" then
+        twoh.acceptQuest(questName, index)
+    elseif stage == "claim" then
+        twoh.status("claiming " .. questName)
+        if twoh.goToNPC(twoh.questNPCName(questName, index)) then
+            invokeInput("Quest", "Claim", questName)
+            task.wait(1)
+        else
+            twoh.fail("cannot reach " .. twoh.questNPCName(questName, index) .. " to claim " .. questName)
+        end
+    elseif stage == "dio" then
+        twoh.fightDio(questName)
+    elseif stage == "ep2" then
+        twoh.runDiaries(questName)
+        releaseMovement("twoh")
+        return
+    elseif realmStage then
+        twoh.runRealmStage(stage)
+    end
+    lockedTargetCFrame = nil
+    releaseMovement("twoh")
+end
+
+function Extras.Twoh.prestigeNeed()
+    if not State.PrestigeEnabled then
+        return nil
+    end
+    local progress = Prestige.getRequirementProgress()
+    for _, entry in ipairs(progress or {}) do
+        if entry.Type == Extras.Twoh.PrestigeKillType and not entry.Done then
+            return entry
+        end
+    end
+    return nil
+end
+
+function Extras.Twoh.realmOwner()
+    local twoh = Extras.Twoh
+    if State.AutoTwohEnabled then
+        return "Auto TWOH"
+    end
+    if State.PrestigeEnabled and (twoh.Delegated or next(twoh.RealmRequesters) ~= nil) then
+        return "Auto Prestige"
+    end
+    return nil
+end
+
+function Extras.Twoh.requestRealm(requester, drive)
+    local twoh = Extras.Twoh
+    twoh.RealmRequesters[requester] = true
+    if drive and not State.AutoTwohEnabled then
+        twoh.Delegated = true
+    end
+end
+
+function Extras.Twoh.releaseRealm(requester)
+    local twoh = Extras.Twoh
+    twoh.RealmRequesters[requester] = nil
+    if not twoh.Delegated or next(twoh.RealmRequesters) ~= nil then
+        return
+    end
+    twoh.Delegated = false
+    twoh.PrestigeLabel = nil
+    twoh.FarmingKeys = false
+    twoh.MoneyPhase = false
+    twoh.PrestigeCheckUntil = nil
+    if State.AutoTwohEnabled then
+        return
+    end
+    twoh.releaseAll()
+    twoh.unlockF()
+    twoh.restoreDungeonHelper()
+    task.spawn(twoh.restoreStyle)
+end
+
+function Extras.Twoh.prestigeSkipReason()
+    local twoh = Extras.Twoh
+    if os.clock() < (twoh.PrestigeGiveUpUntil or 0) then
+        return string.format("gave up: %s | retry in %ds", tostring(twoh.PrestigeGiveUpReason), math.ceil(twoh.PrestigeGiveUpUntil - os.clock()))
+    end
+    local dungeonName = workspaceService:GetAttribute("Dungeon")
+    if dungeonName == twoh.RealmName then
+        return nil
+    end
+    if dungeonName ~= nil then
+        return "inside another dungeon (" .. tostring(dungeonName) .. ")"
+    end
+    if os.clock() < (twoh.PrestigeCheckUntil or 0) then
+        return twoh.PrestigeSkip
+    end
+    local reason = nil
+    local halt = twoh.HaltReason or twoh.loadState().Halt
+    if not twoh.hasWorld() then
+        reason = "requires The World style (not owned)"
+    elseif typeof(halt) == "string" and halt ~= "" then
+        reason = "Realm runs halted (" .. halt .. ") | turn Auto Prestige off and on to retry"
+    elseif getInventoryAmount(twoh.KeyItem) < 1 and not UnlockFarm.isQuestCompleted(twoh.Quests[2]) and twoh.getStage() == "needsEnhance" then
+        reason = string.format("needs The World +%d for Earthly Proofs (now +%d) | can't get keys", twoh.RequiredLevel, twoh.EnhanceLevel or 0)
+    end
+    twoh.PrestigeSkip = reason
+    twoh.PrestigeCheckUntil = os.clock() + (reason and 10 or 5)
+    return reason
+end
+
+function Extras.Twoh.prestigeStep(req)
+    local twoh = Extras.Twoh
+    twoh.requestRealm("prestige", true)
+    if req then
+        twoh.PrestigeLabel = string.format("Dio Heaven Ascension %d/%d", math.floor(req.Current), math.floor(req.Needed))
+    else
+        twoh.PrestigeLabel = "Dio Heaven Ascension done | finishing this realm run"
+    end
+    twoh.lockF()
+    twoh.connectFloorReset()
+    local ok, errorMessage = pcall(twoh.prestigeRun)
+    if not ok then
+        twoh.releaseAll()
+        twoh.status("error: " .. tostring(errorMessage) .. " | retrying in 5s")
+        twoh.log("PRESTIGE ERROR " .. tostring(errorMessage))
+        task.wait(5)
+    end
+end
+
+function Extras.Twoh.prestigeRun()
+    local twoh = Extras.Twoh
+    if workspaceService:GetAttribute("Dungeon") == twoh.RealmName then
+        twoh.runRealm()
+        return
+    end
+    local keys = getInventoryAmount(twoh.KeyItem)
+    local ep2Done = UnlockFarm.isQuestCompleted(twoh.Quests[2])
+    if keys < 1 and not ep2Done then
+        twoh.prestigeUnlockKeys()
+        return
+    end
+    if keys >= 1 then
+        twoh.FarmingKeys = false
+    end
+    local owned, holder = twoh.claim()
+    if not owned then
+        twoh.status("waiting for " .. tostring(holder) .. " to hand over movement")
+        task.wait(0.5)
+        return
+    end
+    twoh.runRealmStage("prestige")
+    lockedTargetCFrame = nil
+    releaseMovement("twoh")
+end
+
+function Extras.Twoh.prestigeUnlockKeys()
+    local twoh = Extras.Twoh
+    twoh.PrestigeLabel = tostring(twoh.PrestigeLabel) .. " | no keys | unlocking Realm keys via Earthly Proofs 1-2"
+    local stage, questName, index = twoh.getStage()
+    if stage ~= twoh.Stage then
+        twoh.Fails = 0
+        twoh.FishStartedAt = nil
+        if twoh.Stage == "ep2" then
+            twoh.stopFishing()
+        end
+    end
+    twoh.Stage = stage
+    if stage == "needsWorld" or stage == "needsEnhance" then
+        twoh.releaseAll()
+        twoh.status(stage == "needsWorld" and "requires The World style (not owned) | skipping" or string.format("needs The World +%d for Earthly Proofs (now +%d) | can't get keys | skipping", twoh.RequiredLevel, twoh.EnhanceLevel or 0))
+        twoh.PrestigeCheckUntil = nil
+        task.wait(3)
+        return
+    end
+    if stage ~= "accept" and stage ~= "claim" and stage ~= "dio" and stage ~= "ep2" then
+        twoh.releaseAll()
+        twoh.status("Earthly Proofs 2 not completed but the stage is " .. tostring(stage) .. " | rechecking in 3s")
+        task.wait(3)
+        return
+    end
+    twoh.runQuestStage(stage, questName, index)
 end
 
 Extras.Bankai = {
@@ -7795,7 +9825,14 @@ function Extras.isCarryingCoffin()
     end
     for _, descendant in ipairs(character:GetDescendants()) do
         if string.find(string.lower(descendant.Name), "coffin", 1, true) then
-            return true
+            local topLevel = descendant
+            while topLevel.Parent and topLevel.Parent ~= character do
+                topLevel = topLevel.Parent
+            end
+            local cosmetic = topLevel ~= descendant and (topLevel:IsA("Tool") or topLevel:IsA("Accessory") or string.sub(topLevel.Name, -6) == " Model" or string.sub(topLevel.Name, -6) == " Style")
+            if not cosmetic then
+                return true
+            end
         end
     end
     for _, holder in ipairs({ character, localPlayer }) do
@@ -7868,8 +9905,15 @@ function Extras.abilityFlyTo(targetPosition, isActive, maxSeconds)
         return false
     end
     if swimRoot and swimRoot:FindFirstChild("Swim") then
-        State.TravelStatus = "In the water (swim lock) | the ability flight cannot start here"
-        return false
+        State.TravelStatus = "In the water | rising above the surface before flying"
+        if not Extras.leaveWater() then
+            State.TravelStatus = "In the water (swim lock) | could not rise above the surface"
+            return false
+        end
+        swimRoot, playerHumanoid = getRoot()
+        if not swimRoot or not playerHumanoid then
+            return false
+        end
     end
     if tool.Parent ~= localPlayer.Character then
         pcall(function()
@@ -7912,11 +9956,26 @@ function Extras.abilityFlyTo(targetPosition, isActive, maxSeconds)
             break
         end
         Combat.AimUntil = os.clock() + 1
-        if not rootPart:FindFirstChild("FlightVelocity") and os.clock() - lastPress > 1.5 then
-            lastPress = os.clock()
-            task.spawn(function()
-                pcall(activeTool.Move, flightKey)
-            end)
+        local outsideDungeon = workspaceService:GetAttribute("Dungeon") == nil
+        if outsideDungeon and (rootPart:FindFirstChild("Swim") or rootPart.Position.Y < 4) then
+            State.TravelStatus = "Flight dipped into the water | rising and re-casting " .. flightKey
+            Extras.leaveWater()
+            lastPress = 0
+            rootPart = getRoot()
+            if not rootPart then
+                break
+            end
+        end
+        if rootPart:FindFirstChild("FlightVelocity") then
+            removeFloat(rootPart)
+        else
+            getOrCreateFloat(rootPart)
+            if os.clock() - lastPress > 0.8 then
+                lastPress = os.clock()
+                task.spawn(function()
+                    pcall(activeTool.Move, flightKey)
+                end)
+            end
         end
         State.TravelStatus = string.format("Flying with %s %s (%d studs)", tool.Name, flightKey, math.floor(flatDistance))
         task.wait(0.1)
@@ -8034,8 +10093,20 @@ function Extras.deliverCoffin(isActive)
 
     local gained = getInventoryAmount("Coffin Page") - pagesBefore
     if gained > 0 then
+        Extras.CoffinDeliveryFails = 0
         State.ExtraStatus = "Coffin: delivered | +" .. tostring(gained) .. " Coffin Page"
         return true
+    end
+    if Extras.isCarryingCoffin() then
+        Extras.CoffinDeliveryFails = (Extras.CoffinDeliveryFails or 0) + 1
+        if Extras.CoffinDeliveryFails >= 2 then
+            Extras.CoffinDeliveryFails = 0
+            Extras.CoffinBlockedUntil = os.clock() + 600
+            State.ExtraStatus = "Coffin: the Stranger refused twice | pausing coffins for 10 min | " .. tostring(State.LastNotifyText)
+            return false
+        end
+    else
+        Extras.CoffinDeliveryFails = 0
     end
     State.ExtraStatus = "Coffin: delivery done | " .. tostring(State.LastNotifyText)
     return not Extras.isCarryingCoffin()
@@ -8056,6 +10127,9 @@ function Extras.findCoffinModelPosition()
 end
 
 function Extras.isCoffinAvailable()
+    if os.clock() < (Extras.CoffinBlockedUntil or 0) or workspaceService:GetAttribute("Dungeon") ~= nil then
+        return false
+    end
     if not Extras.CoffinCandidates then
         return Extras.isCarryingCoffin() or Extras.findItemIndicator("coffin") ~= nil
     end
@@ -8064,6 +10138,9 @@ end
 
 function Extras.runCoffinStep(isActive)
     isActive = isActive or Extras.isAutoCoffinActive
+    if workspaceService:GetAttribute("Dungeon") ~= nil then
+        return false
+    end
     Extras.connectItemIndicators()
     if not getgenv().HubCoffinConnection or not Extras.CoffinCandidates then
         Extras.watchCoffins()
@@ -8269,7 +10346,18 @@ function Extras.planSolemnGather()
     if missing[solemn.CoffinPage] and Extras.isCoffinAvailable() then
         return "coffin", missing
     end
-    if not BossFarm.isBossAlive(solemn.BossName) and (solemn.TicketMoneyActive or (getMoney() < solemn.TicketMoneyFloor and getInventoryAmount("Boss Ticket") < 100)) then
+    local butterflyBossAlive = false
+    for _, bossName in ipairs(solemn.ButterflyBosses) do
+        butterflyBossAlive = butterflyBossAlive or BossFarm.isBossAlive(bossName)
+    end
+    local nextEntry = BossFarm.getSummonEntry(butterflies >= solemn.ButterflySummonCost and solemn.BossName or solemn.ButterflyBosses[1])
+    local outOfTickets = nextEntry == nil
+    if nextEntry then
+        for _, shortfall in ipairs(BossFarm.getSummonShortfall(nextEntry)) do
+            outOfTickets = outOfTickets or shortfall.Item == "Boss Ticket"
+        end
+    end
+    if not BossFarm.isBossAlive(solemn.BossName) and not butterflyBossAlive and (solemn.TicketMoneyActive or (getMoney() < solemn.TicketMoneyFloor and outOfTickets)) then
         solemn.TicketMoneyActive = getMoney() < solemn.TicketMoneyTarget
         if solemn.TicketMoneyActive then
             return "ticketmoney", missing
@@ -8532,13 +10620,16 @@ function Extras.runSolemnGather(plan, missing)
     local solemn = Extras.Solemn
     local missingText = "missing: " .. table.concat(missing, ", ")
     local fightCondition = Extras.solemnFightCondition()
+    if solemn.TrackedBoss then
+        Extras.trackBossKills(solemn, solemn.BossName)
+    end
 
     if plan == "coffin" then
         Extras.runCoffinStep(Extras.isSolemnActive)
     elseif plan == "summon" then
         Extras.ensureSpawnNear(solemn.FerrymanPosition, Extras.isSolemnActive, Extras.solemnStatus)
         Extras.trackBossKills(solemn, solemn.BossName)
-        Extras.solemnStatus(string.format("%s for the title (kills this session %d, pity 80) | butterflies %d | %s", solemn.BossName, solemn.TitleKills, getInventoryAmount(solemn.ButterflyItem), missingText))
+        Extras.solemnStatus(string.format("%s for the title (pity %s/80, kills this session %d) | butterflies %d | %s", solemn.BossName, tostring(localPlayer:GetAttribute("TitlePity_Solemn_Lament") or "?"), solemn.TitleKills, getInventoryAmount(solemn.ButterflyItem), missingText))
         local killsBefore = solemn.TitleKills
         BossFarm.prepareAndKill(BossFarm.getSummonEntry(solemn.BossName), fightCondition, "solemn")
         Extras.trackBossKills(solemn, solemn.BossName)
@@ -8547,7 +10638,7 @@ function Extras.runSolemnGather(plan, missing)
         end
     elseif plan == "butterflies" then
         local catalogItem = Extras.pickButterflyBoss()
-        Extras.solemnStatus(string.format("farming %s for Soul Butterflies %d / Lament Page %d | %s", catalogItem and catalogItem.Name or "?", getInventoryAmount(solemn.ButterflyItem), getInventoryAmount(solemn.LamentPage), missingText))
+        Extras.solemnStatus(string.format("farming %s for Soul Butterflies %d/%d | title pity %s/80 | %s", catalogItem and catalogItem.Name or "?", getInventoryAmount(solemn.ButterflyItem), missing[solemn.TitleName] and solemn.ButterflySummonCost or solemn.ButterflyNeeded, tostring(localPlayer:GetAttribute("TitlePity_Solemn_Lament") or "?"), missingText))
         BossFarm.prepareAndKill(catalogItem, fightCondition, "solemn")
     elseif plan == "ticketmoney" then
         Extras.farmSolemnMoney(function()
@@ -8661,6 +10752,28 @@ function Extras.getFireForceRank()
     return rankValue and tostring(rankValue.Value) or "None"
 end
 
+function Extras.findOwnAmbusher()
+    local rootPart = getRoot()
+    if not rootPart then
+        return nil
+    end
+    local best, bestDistance = nil, math.huge
+    for _, enemy in ipairs(enemiesFolder:GetChildren()) do
+        if enemy.Name == "Infernal Ambusher" then
+            local ownerId = enemy:GetAttribute("OwnerUserId")
+            local humanoid = enemy:FindFirstChildOfClass("Humanoid")
+            local enemyRoot = enemy:FindFirstChild("HumanoidRootPart")
+            if (ownerId == nil or ownerId == localPlayer.UserId) and humanoid and humanoid.Health > 0 and enemyRoot then
+                local distance = (enemyRoot.Position - rootPart.Position).Magnitude
+                if distance < bestDistance then
+                    best, bestDistance = enemy, distance
+                end
+            end
+        end
+    end
+    return best
+end
+
 function Extras.isAmbushOnCooldown()
     return os.clock() < (Extras.NextAmbushAt or 0) and Extras.findFireForceZone() == nil
 end
@@ -8689,10 +10802,9 @@ function Extras.runAmbushDuty(isActive, statusPrefix)
     statusPrefix = statusPrefix or "Fire Company Ambush"
     local ambusherName = "Infernal Ambusher"
     local progressText = Extras.describeProgress("AH")
-    local rootPart = getRoot()
-    if rootPart and getTargetEnemy(ambusherName, rootPart.Position, true) then
+    if Extras.findOwnAmbusher() then
         State.ExtraStatus = statusPrefix .. ": fighting " .. ambusherName .. " " .. progressText
-        farmMobWithAnchor(ambusherName, isActive, true)
+        engageMob(ambusherName, isActive, true)
         return true
     end
 
@@ -9252,6 +11364,22 @@ function Extras.getFireForceZoneRoot(zone)
 end
 
 Extras.KnownZonePositions = { Vector3.new(1322, 11, 2302) }
+Extras.ZonePath = "LEGACY PIECE/ambush_zones.json"
+pcall(function()
+    local decoded = httpService:JSONDecode(readfile(Extras.ZonePath))
+    for _, point in ipairs(decoded) do
+        if tonumber(point.X) and tonumber(point.Y) and tonumber(point.Z) then
+            local position = Vector3.new(point.X, point.Y, point.Z)
+            local known = false
+            for _, existing in ipairs(Extras.KnownZonePositions) do
+                known = known or (existing - position).Magnitude < 60
+            end
+            if not known then
+                table.insert(Extras.KnownZonePositions, position)
+            end
+        end
+    end
+end)
 
 function Extras.rememberZonePosition(position)
     for _, known in ipairs(Extras.KnownZonePositions) do
@@ -9260,6 +11388,11 @@ function Extras.rememberZonePosition(position)
         end
     end
     table.insert(Extras.KnownZonePositions, 1, position)
+    local encoded = {}
+    for _, known in ipairs(Extras.KnownZonePositions) do
+        table.insert(encoded, { X = math.floor(known.X), Y = math.floor(known.Y), Z = math.floor(known.Z) })
+    end
+    pcall(writefile, Extras.ZonePath, httpService:JSONEncode(encoded))
 end
 
 function Extras.locateFireForceZone(zone, isActive)
@@ -9293,7 +11426,7 @@ function Extras.locateFireForceZone(zone, isActive)
     safeTravelTo(CFrame.new(target + Vector3.new(0, 10, 0)), function()
         return isActive() and zone.Parent ~= nil and Extras.getFireForceZoneRoot(zone) == nil
     end)
-    task.wait(1)
+    task.wait(0.4)
 
     root = zone.Parent and Extras.getFireForceZoneRoot(zone)
     if root then
@@ -9326,13 +11459,13 @@ function Extras.triggerFireForceZone(statusPrefix, isActive)
         safeTravelTo(CFrame.new(zonePosition + Vector3.new(0, 4, 3)), function()
             return isActive() and zone.Parent ~= nil
         end)
-        task.wait(0.5)
+        task.wait(0.2)
     end
 
     prompt = zone.Parent and Extras.getFireForceZonePrompt(zone)
     if not prompt then
         State.ExtraStatus = statusPrefix .. "ambush zone prompt not ready"
-        task.wait(1)
+        task.wait(0.4)
         return true
     end
 
@@ -9363,9 +11496,9 @@ function Extras.runTrialAmbushStep(questName)
     local rootPart = getRoot()
     local progressText = string.format("(%d/%d)", Extras.getQuestProgress(questName), Extras.FireForceGoals[3])
 
-    if rootPart and getTargetEnemy(ambusherName, rootPart.Position, true) then
+    if rootPart and Extras.findOwnAmbusher() then
         State.ExtraStatus = "Fire Force 3/3: fighting " .. ambusherName .. " " .. progressText
-        farmMobWithAnchor(ambusherName, function()
+        engageMob(ambusherName, function()
             return State.AutoFireForceTrialEnabled and not UnlockFarm.isQuestReadyToClaim(questName)
         end, true)
         return
@@ -9659,6 +11792,15 @@ function Extras.stopAll()
     Extras.PriorityRequest = nil
     Extras.stopLoop("AutoDeepsharkEnabled", "deepshark")
     Extras.stopLoop("AutoArayaEnabled", "araya")
+    Extras.stopLoop("AutoTwohEnabled", "twoh")
+    if Extras.Twoh then
+        Extras.Twoh.RealmRequesters = {}
+        Extras.Twoh.Delegated = false
+        pcall(Extras.Twoh.releaseAll)
+        pcall(Extras.Twoh.unlockF)
+        State.TwohRunDrops = nil
+        task.spawn(Extras.Twoh.restoreStyle)
+    end
     Extras.stopLoop("AutoBankaiEnabled", "bankai")
     Extras.stopLoop("AutoSolemnEnabled", "solemn")
     Extras.DeepsharkRequesters = {}
@@ -9671,7 +11813,7 @@ function Extras.stopAll()
         end
         getgenv().HubItemIndicatorConnections = nil
     end
-    for _, connectionName in ipairs({ "HubArayaConnection", "HubArayaTeleportConnection" }) do
+    for _, connectionName in ipairs({ "HubArayaConnection", "HubArayaTeleportConnection", "HubAutoDungeonConnection", "HubTwohDungeonAttrConnection", "HubTwohEnemyAddConnection" }) do
         if getgenv()[connectionName] then
             pcall(function()
                 getgenv()[connectionName]:Disconnect()
@@ -10013,7 +12155,7 @@ function Prestige.handleBossRequirement(req, bossName)
         return State.PrestigeEnabled and Prestige.isEntryMissing(reqType, reqName)
     end
 
-    State.PrestigeStatus = string.format("Prestige Boss: %s (%d/%d)", bossName, math.floor(req.Current), math.floor(req.Needed))
+    State.PrestigeStatus = string.format("Prestige Boss: %s (%d/%d)", bossName, math.floor(req.Current), math.floor(req.Needed)) .. Prestige.ParkedSuffix
 
     local catalogItem = summonEntryByName[normalizeName(bossName)]
     if catalogItem then
@@ -10051,7 +12193,7 @@ function Prestige.handleLevelRequirement(req)
         return State.PrestigeEnabled and Prestige.isEntryMissing(reqType, reqName)
     end
 
-    State.PrestigeStatus = string.format("Prestige %s: %d/%d", tostring(req.Label), math.floor(req.Current), math.floor(req.Needed))
+    State.PrestigeStatus = string.format("Prestige %s: %d/%d", tostring(req.Label), math.floor(req.Current), math.floor(req.Needed)) .. Prestige.ParkedSuffix
     autoAllocateStats()
     collectNearbyPickup("prestige")
 
@@ -10083,6 +12225,567 @@ function Prestige.handleLevelRequirement(req)
     lockedTargetCFrame = nil
 end
 
+Prestige.DungeonBlocked = {}
+Prestige.DungeonDifficulty = "Easy"
+
+function Prestige.getDungeonData()
+    if Prestige.DungeonDataCache == nil or (Prestige.DungeonDataCache == false and os.clock() - (Prestige.DungeonDataFailedAt or 0) > 30) then
+        local ok, result = pcall(function()
+            return require(configurationsFolder:WaitForChild("DungeonData", 5))
+        end)
+        Prestige.DungeonDataCache = (ok and typeof(result) == "table") and result or false
+        if Prestige.DungeonDataCache == false then
+            Prestige.DungeonDataFailedAt = os.clock()
+        end
+        Prestige.BossDungeonMemo = {}
+    end
+    return Prestige.DungeonDataCache or nil
+end
+
+function Prestige.findBossDungeon(bossName)
+    local data = Prestige.getDungeonData()
+    if not data or not bossName then
+        return nil
+    end
+    Prestige.BossDungeonMemo = Prestige.BossDungeonMemo or {}
+    local memo = Prestige.BossDungeonMemo[bossName]
+    if memo then
+        return memo.Key, memo.Info
+    end
+    local wanted = normalizeName(bossName)
+    local foundKey, foundInfo = nil, nil
+    for dungeonKey, info in pairs(data) do
+        if not foundKey and typeof(info) == "table" and typeof(info.Bosses) == "table" then
+            for _, listed in pairs(info.Bosses) do
+                if typeof(listed) == "string" and normalizeName(listed) == wanted then
+                    foundKey, foundInfo = dungeonKey, info
+                    break
+                end
+            end
+        end
+    end
+    Prestige.BossDungeonMemo[bossName] = { Key = foundKey, Info = foundInfo }
+    return foundKey, foundInfo
+end
+
+function Prestige.isKnownDungeon(dungeonName)
+    if Prestige.getDungeonEntry(dungeonName) then
+        return true
+    end
+    local data = Prestige.getDungeonData()
+    local info = data and data[dungeonName]
+    return typeof(info) == "table" and typeof(info.Bosses) == "table"
+end
+
+function Prestige.getDungeonEntry(dungeonKey)
+    for _, entry in ipairs(Extras.Dungeons) do
+        if entry.Key == dungeonKey then
+            return entry
+        end
+    end
+    return nil
+end
+
+Prestige.ParkedTypes = { YhwachKills = "Yhwach Global Boss kills" }
+Prestige.ParkedSuffix = ""
+Prestige.Idle = false
+
+function Prestige.parkedText(plan)
+    local parts = {}
+    for _, req in ipairs(plan.Parked) do
+        table.insert(parts, Prestige.ParkedTypes[req.Type] .. ": skipped (manual)")
+    end
+    return table.concat(parts, " | ")
+end
+
+function Prestige.planRequirements(progress)
+    local plan = { Dungeons = {}, Waiting = {}, Parked = {} }
+    for _, req in ipairs(progress or {}) do
+        if not req.Done then
+            if Prestige.ParkedTypes[req.Type] then
+                table.insert(plan.Parked, req)
+            elseif string.find(req.Type, "Kills$") and req.Type ~= "NPCKills" then
+                local bossName = prestigeBossMap[req.Type] or prestigeKillBossMap[req.Type] or req.Name
+                if bossName then
+                    local summonable = summonEntryByName[normalizeName(bossName)] ~= nil
+                    local dungeonKey, dungeonInfo = nil, nil
+                    if not summonable then
+                        dungeonKey, dungeonInfo = Prestige.findBossDungeon(bossName)
+                    end
+                    if req.Type == Extras.Twoh.PrestigeKillType or dungeonKey == Extras.Twoh.RealmName then
+                        plan.Realm = plan.Realm or req
+                    elseif dungeonKey then
+                        table.insert(plan.Dungeons, { Req = req, Boss = bossName, Key = dungeonKey, Info = dungeonInfo, Entry = Prestige.getDungeonEntry(dungeonKey) })
+                    elseif not plan.Boss and (summonable or BossFarm.isBossAlive(bossName)) then
+                        plan.Boss = req
+                        plan.BossTarget = bossName
+                    elseif not summonable then
+                        if bossName == Extras.DeepsharkName then
+                            plan.Deepshark = true
+                        else
+                            table.insert(plan.Waiting, bossName)
+                        end
+                    end
+                end
+            elseif req.Type == "Material" then
+                plan.Material = plan.Material or req
+            elseif req.Type == "Level" or req.Type == "NPCKills" then
+                plan.Level = plan.Level or req
+            end
+        end
+    end
+    if plan.BossTarget == Extras.DeepsharkName then
+        plan.Deepshark = true
+    end
+    return plan
+end
+
+function Prestige.neededDungeons(fresh)
+    local cache = Prestige.NeededCache
+    if not fresh and cache and os.clock() - cache.At < 1 then
+        return cache.Map
+    end
+    local map = {}
+    local progress = Prestige.getRequirementProgress()
+    if progress then
+        for _, work in ipairs(Prestige.planRequirements(progress).Dungeons) do
+            map[work.Key] = map[work.Key] or work
+        end
+    end
+    Prestige.NeededCache = { At = os.clock(), Map = map }
+    return map
+end
+
+function Prestige.ownsDungeon(dungeonName)
+    if not State.PrestigeEnabled or typeof(dungeonName) ~= "string" or dungeonName == Extras.Twoh.RealmName then
+        return false
+    end
+    if State.AutoArayaEnabled and Extras.isArayaDungeon(dungeonName) then
+        return false
+    end
+    return Prestige.neededDungeons()[dungeonName] ~= nil
+end
+
+function Prestige.onDungeonState(syncRemote, status, dungeonName)
+    if status == "Vote" then
+        task.delay(1, function()
+            pcall(function()
+                syncRemote:FireServer("Vote", Prestige.DungeonDifficulty)
+            end)
+        end)
+    elseif status == "Clear" or status == "Lose" then
+        Prestige.LoseStreak = Prestige.LoseStreak or {}
+        if status == "Clear" then
+            Prestige.LoseStreak[dungeonName] = 0
+        else
+            Prestige.LoseStreak[dungeonName] = (Prestige.LoseStreak[dungeonName] or 0) + 1
+            if Prestige.LoseStreak[dungeonName] >= 4 then
+                Prestige.LoseStreak[dungeonName] = 0
+                Prestige.blockDungeon(dungeonName, "lost 4 runs in a row", 600)
+            end
+        end
+        task.delay(2, function()
+            local keyItem = Prestige.dungeonKeyItem(dungeonName)
+            if keyItem and getInventoryAmount(keyItem) < 1 then
+                return
+            end
+            if State.PrestigeEnabled and Prestige.neededDungeons(true)[dungeonName] and not Prestige.isDungeonBlocked(dungeonName) then
+                Prestige.ReplaySentAt = os.clock()
+                pcall(function()
+                    syncRemote:FireServer("ReplayVote")
+                end)
+            end
+        end)
+    end
+end
+
+function Prestige.dungeonKeyItem(dungeonName)
+    local entry = Prestige.getDungeonEntry(dungeonName)
+    local data = Prestige.getDungeonData()
+    local info = data and data[dungeonName]
+    if entry and entry.Item then
+        return entry.Item
+    end
+    if typeof(info) == "table" and typeof(info.PortalKey) == "string" then
+        return info.PortalKey
+    end
+    return nil
+end
+
+function Prestige.workLabel(work)
+    return string.format("Prestige: %s %d/%d", tostring(work.Boss), math.floor(work.Req.Current), math.floor(work.Req.Needed))
+end
+
+function Prestige.blockDungeon(dungeonKey, reason, seconds, static)
+    local blocked = Prestige.DungeonBlocked[dungeonKey] or { Fails = 0 }
+    if static then
+        blocked.Static = true
+        blocked.Until = math.huge
+        blocked.Reason = tostring(reason)
+        Prestige.DungeonBlocked[dungeonKey] = blocked
+        return
+    end
+    blocked.Static = nil
+    blocked.Fails = blocked.Fails + 1
+    blocked.Until = os.clock() + (seconds or math.min(30 * 2 ^ (blocked.Fails - 1), 600))
+    blocked.Reason = tostring(reason)
+    Prestige.DungeonBlocked[dungeonKey] = blocked
+end
+
+function Prestige.refreshStaticBlock(work)
+    local blocker = Prestige.dungeonBlocker(work)
+    local blocked = Prestige.DungeonBlocked[work.Key]
+    if blocker then
+        if not (blocked and not blocked.Static and os.clock() < blocked.Until) then
+            Prestige.blockDungeon(work.Key, blocker, nil, true)
+        end
+    elseif blocked and blocked.Static then
+        Prestige.DungeonBlocked[work.Key] = nil
+    end
+end
+
+function Prestige.blockedText(work)
+    local blocked = Prestige.DungeonBlocked[work.Key]
+    local tail = (blocked and blocked.Static) and "waiting for it" or ("retry in " .. math.max(0, math.floor((blocked and blocked.Until or os.clock()) - os.clock())) .. "s")
+    return string.format("%s %d/%d: %s blocked (%s) | %s", tostring(work.Boss), math.floor(work.Req.Current), math.floor(work.Req.Needed), work.Entry and work.Entry.Name or tostring(work.Key), tostring(blocked and blocked.Reason), tail)
+end
+
+function Prestige.isDungeonBlocked(dungeonKey)
+    local blocked = Prestige.DungeonBlocked[dungeonKey]
+    return blocked ~= nil and os.clock() < blocked.Until
+end
+
+function Prestige.dungeonBlocker(work)
+    local entry = work.Entry
+    local info = work.Info or {}
+    if not entry then
+        return "the hub has no entry route for " .. tostring(work.Key)
+    end
+    if State.AutoArayaEnabled and Extras.isArayaDungeon(work.Key) then
+        return "Auto Araya is running it (its kills count too)"
+    end
+    if entry.Quest and not UnlockFarm.isQuestCompleted(entry.Quest) then
+        return "finish the quest \"" .. entry.Quest .. "\" first"
+    end
+    local keyItem = entry.Item or (typeof(info.PortalKey) == "string" and info.PortalKey or nil)
+    if keyItem and getInventoryAmount(keyItem) < 1 then
+        return "needs 1 " .. keyItem .. " (have 0)"
+    end
+    local requiredStyle = entry.Style or (typeof(info.RequiredStyle) == "string" and info.RequiredStyle or nil)
+    if requiredStyle and getInventoryAmount(requiredStyle) < 1 then
+        return "requires " .. requiredStyle .. " (not owned)"
+    end
+    return nil
+end
+
+function Prestige.leaveDungeon(reason)
+    State.PrestigeStatus = "Prestige: leaving " .. tostring(workspaceService:GetAttribute("Dungeon")) .. " | " .. tostring(reason)
+    Prestige.DungeonWork = nil
+    pcall(Extras.queueArayaReload)
+    lockedEnemyRoot = nil
+    lockedTargetCFrame = nil
+    if os.clock() - (Prestige.LeaveSentAt or 0) > 8 then
+        Prestige.LeaveSentAt = os.clock()
+        Extras.expectTeleport(15)
+        local leaveRemote = eventsFolder and eventsFolder:FindFirstChild("DungeonLeave")
+        if leaveRemote then
+            pcall(function()
+                leaveRemote:FireServer()
+            end)
+        end
+    end
+    task.wait(1)
+end
+
+function Prestige.enterDungeon(work)
+    local entry = work.Entry
+    local label = Prestige.workLabel(work) .. " | " .. entry.Name .. " (" .. Prestige.DungeonDifficulty .. ")"
+    local function setStatus(message)
+        Prestige.LastDungeonMessage = tostring(message)
+        State.PrestigeStatus = label .. " | " .. tostring(message)
+    end
+    if not acquireMovement("prestige") then
+        setStatus("waiting for " .. tostring(Extras.PriorityRequest or movementOwner) .. " to finish")
+        task.wait(0.5)
+        return
+    end
+    Prestige.LastDungeonMessage = nil
+    local started = Extras.enterSelectedDungeon(entry, function()
+        return State.PrestigeEnabled
+    end, setStatus)
+    lockedTargetCFrame = nil
+    releaseMovement("prestige")
+    if not started and State.PrestigeEnabled then
+        Prestige.blockDungeon(work.Key, Prestige.LastDungeonMessage or "entry failed")
+    end
+end
+
+function Prestige.runDungeonInside(work, dungeonName)
+    Extras.connectAutoDungeon()
+    Extras.Twoh.muteDungeonHelper()
+    pcall(Extras.queueArayaReload)
+    Prestige.DungeonWork = dungeonName
+    local label = Prestige.workLabel(work) .. " | in " .. dungeonName
+    if not acquireMovement("prestige") then
+        State.PrestigeStatus = label .. " | waiting for " .. tostring(Extras.PriorityRequest or movementOwner) .. " to finish"
+        task.wait(0.5)
+        return
+    end
+    local waveText = string.format("wave %s/%s", tostring(Extras.DungeonWave or "?"), tostring(Extras.DungeonMaxWave or "?"))
+    local rootPart = getRoot()
+    local timeSafe = Extras.isArayaDungeon(dungeonName) and dungeonName ~= Extras.Araya.EstateName
+    local target = nil
+    if rootPart then
+        target = timeSafe and Extras.pickArayaTarget(rootPart) or Extras.pickDungeonTarget(rootPart)
+    end
+    if target then
+        Prestige.DungeonIdleSince = nil
+        State.PrestigeStatus = label .. " | fighting " .. target.Name .. " | " .. waveText
+        farmMobWithAnchor(target.Name, function()
+            return State.PrestigeEnabled and target.Parent ~= nil and Prestige.neededDungeons()[dungeonName] ~= nil
+        end, true)
+    else
+        local now = os.clock()
+        local status = tostring(Prestige.DungeonStatus or "?")
+        State.PrestigeStatus = label .. " | " .. status .. " | waiting for enemies | " .. waveText
+        Prestige.DungeonIdleSince = Prestige.DungeonIdleSince or now
+        if (status == "Clear" or status == "Lose") and now - Prestige.DungeonIdleSince > 30 then
+            Prestige.DungeonIdleSince = nil
+            releaseMovement("prestige")
+            Prestige.leaveDungeon("run ended and the replay did not start (keys or lobby) | leaving")
+            return
+        end
+        if now - Prestige.DungeonIdleSince >= 12 and now - (Prestige.DungeonNudgeAt or 0) >= 10 then
+            Prestige.DungeonNudgeAt = now
+            local syncRemote = eventsFolder and eventsFolder:FindFirstChild("DungeonInsideSync")
+            if syncRemote then
+                pcall(function()
+                    syncRemote:FireServer("ReplayVote")
+                end)
+                pcall(function()
+                    syncRemote:FireServer("Vote", Prestige.DungeonDifficulty)
+                end)
+            end
+        end
+        task.wait(0.5)
+    end
+    releaseMovement("prestige")
+end
+
+function Prestige.handleInsideDungeon(plan, dungeonName, missingText)
+    if State.AutoArayaEnabled and Extras.isArayaDungeon(dungeonName) then
+        Prestige.activeWork = nil
+        Prestige.DungeonWork = nil
+        State.PrestigeStatus = "Prestige: Auto Araya is running " .. dungeonName .. " | waiting | missing: " .. missingText
+        task.wait(1)
+        return
+    end
+    local otherWorkReady = false
+    for _, work in ipairs(plan.Dungeons) do
+        if work.Key == dungeonName then
+            if Prestige.isDungeonBlocked(dungeonName) then
+                Prestige.activeWork = "leave " .. dungeonName
+                Prestige.leaveDungeon(Prestige.blockedText(work) .. " | leaving")
+                return
+            end
+            Prestige.activeWork = "dungeon " .. dungeonName
+            Prestige.runDungeonInside(work, dungeonName)
+            return
+        end
+        if not Prestige.isDungeonBlocked(work.Key) and Prestige.dungeonBlocker(work) == nil then
+            otherWorkReady = true
+        end
+    end
+    Prestige.DungeonWork = nil
+    if State.AutoDungeonEnabled and not otherWorkReady then
+        Prestige.activeWork = nil
+        Prestige.restoreHelper()
+        State.PrestigeStatus = "Prestige: inside " .. dungeonName .. " (Auto Dungeon run) | Prestige re-evaluates on the main map | missing: " .. missingText
+        task.wait(1)
+        return
+    end
+    if not Prestige.isKnownDungeon(dungeonName) then
+        Prestige.activeWork = nil
+        Prestige.Idle = true
+        releaseMovement("prestige")
+        State.PrestigeStatus = "Prestige: inside " .. dungeonName .. " (not a Prestige dungeon, left alone) | waiting to return to the main map | missing: " .. missingText
+        task.wait(1)
+        return
+    end
+    Prestige.activeWork = "leave " .. dungeonName
+    Prestige.leaveDungeon("Prestige needs nothing here | re-evaluating on the main map | missing: " .. missingText)
+end
+
+function Prestige.restoreHelper()
+    if not Extras.Twoh.isActive() then
+        Extras.Twoh.restoreDungeonHelper()
+    end
+end
+
+function Prestige.handleMissing(progress, missingText)
+    local plan = Prestige.planRequirements(progress)
+    Prestige.Idle = false
+    Prestige.ParkedSuffix = #plan.Parked > 0 and (" | " .. Prestige.parkedText(plan)) or ""
+    local dungeonName = workspaceService:GetAttribute("Dungeon")
+    if typeof(dungeonName) ~= "string" then
+        dungeonName = nil
+    end
+    local inRealm = dungeonName ~= nil and dungeonName == Extras.Twoh.RealmName
+
+    if dungeonName and not inRealm then
+        Extras.Twoh.releaseRealm("prestige")
+        Extras.requestDeepshark("prestige", false)
+        Prestige.handleInsideDungeon(plan, dungeonName, missingText)
+        return
+    end
+
+    local dungeonWork = nil
+    local blockedWorks = {}
+    if not inRealm then
+        for _, work in ipairs(plan.Dungeons) do
+            Prestige.refreshStaticBlock(work)
+            if Prestige.isDungeonBlocked(work.Key) then
+                table.insert(blockedWorks, work)
+            elseif not dungeonWork then
+                dungeonWork = work
+            end
+        end
+    end
+    Prestige.DungeonWork = dungeonWork and dungeonWork.Key or nil
+
+    local realmMode, realmSkip = nil, nil
+    if inRealm then
+        if not State.AutoTwohEnabled and (plan.Realm or not State.AutoDungeonEnabled) then
+            realmMode = "drive"
+        end
+    elseif plan.Realm and not plan.Boss and not dungeonWork then
+        if State.AutoTwohEnabled then
+            realmMode = "twoh"
+        else
+            realmSkip = Extras.Twoh.prestigeSkipReason()
+            realmMode = realmSkip == nil and "drive" or nil
+        end
+    end
+    if realmMode ~= "drive" then
+        Extras.Twoh.releaseRealm("prestige")
+    end
+    if realmMode == "twoh" then
+        Extras.Twoh.requestRealm("prestige", false)
+    end
+
+    if inRealm and realmMode ~= "drive" then
+        Extras.requestDeepshark("prestige", false)
+        Prestige.activeWork = nil
+        State.PrestigeStatus = "Prestige: inside Realm Beyond Heaven (" .. (State.AutoTwohEnabled and "Auto TWOH" or "Auto Dungeon") .. " run) | waiting | missing: " .. missingText
+        task.wait(1)
+        return
+    end
+    if inRealm and realmMode == "drive" and not plan.Realm then
+        Extras.requestDeepshark("prestige", false)
+        Prestige.activeWork = "leave " .. tostring(dungeonName)
+        Extras.Twoh.finishRun("LeftEarly")
+        Extras.Twoh.ReplayFailed = true
+        Extras.Twoh.leaveRealm("Prestige has enough Dio Heaven Ascension kills")
+        return
+    end
+    if inRealm then
+        Extras.requestDeepshark("prestige", false)
+        Prestige.activeWork = "realm Dio Heaven Ascension"
+        Extras.Twoh.prestigeStep(plan.Realm)
+        return
+    end
+
+    local deepsharkNeeded = plan.Deepshark == true and not inRealm and not dungeonWork
+    Extras.requestDeepshark("prestige", deepsharkNeeded)
+
+    if plan.Boss then
+        Prestige.activeWork = "boss " .. tostring(plan.BossTarget)
+    elseif dungeonWork then
+        Prestige.activeWork = "dungeon " .. tostring(dungeonWork.Key)
+    elseif realmMode then
+        Prestige.activeWork = "realm Dio Heaven Ascension"
+    elseif deepsharkNeeded then
+        Prestige.activeWork = "boss " .. Extras.DeepsharkName
+    elseif plan.Material then
+        Prestige.activeWork = "item " .. tostring(plan.Material.Name)
+    else
+        Prestige.activeWork = nil
+    end
+
+    if plan.Boss then
+        if acquireMovement("prestige") then
+            Prestige.handleBossRequirement(plan.Boss, plan.BossTarget)
+            releaseMovement("prestige")
+        else
+            State.PrestigeStatus = "Boss " .. plan.BossTarget .. " pending | waiting for " .. tostring(Extras.PriorityRequest or movementOwner) .. " to finish"
+            task.wait(0.3)
+        end
+    elseif dungeonWork then
+        Prestige.enterDungeon(dungeonWork)
+    elseif realmMode == "drive" then
+        Extras.Twoh.prestigeStep(plan.Realm)
+    elseif realmMode == "twoh" then
+        State.PrestigeStatus = string.format("Prestige: Dio Heaven Ascension %d/%d | waiting for Auto TWOH realm runs | %s", math.floor(plan.Realm.Current), math.floor(plan.Realm.Needed), tostring(State.ExtraStatus))
+        task.wait(1)
+    elseif plan.Material then
+        local materialRequirement = plan.Material
+        State.PrestigeStatus = string.format("Prestige Item: %s (%d/%d) | %s", tostring(materialRequirement.Name), math.floor(materialRequirement.Current), math.floor(materialRequirement.Needed), describeMaterialPlan(materialRequirement.Name))
+        if acquireMovement("prestige") then
+            UnlockFarm.gatherMaterial(materialRequirement.Name, materialRequirement.Needed, materialRequirement.Current, nil, "prestige")
+            releaseMovement("prestige")
+        else
+            task.wait(0.3)
+        end
+    elseif plan.Level then
+        local levelRequirement = plan.Level
+        local otherMode = Prestige.getOtherFarmMode()
+        if otherMode then
+            State.PrestigeStatus = otherMode .. " is running | prestige waits for " .. string.format("%s %d/%d", tostring(levelRequirement.Label), math.floor(levelRequirement.Current), math.floor(levelRequirement.Needed)) .. Prestige.ParkedSuffix
+            task.wait(0.5)
+        elseif acquireMovement("prestige") then
+            Prestige.handleLevelRequirement(levelRequirement)
+            releaseMovement("prestige")
+        else
+            task.wait(0.3)
+        end
+    else
+        local parts = {}
+        if deepsharkNeeded then
+            table.insert(parts, "needs " .. Extras.DeepsharkName .. " | running Auto Ancient Deepshark | " .. tostring(State.ExtraStatus))
+        end
+        for _, work in ipairs(blockedWorks) do
+            table.insert(parts, Prestige.blockedText(work))
+        end
+        if realmSkip then
+            table.insert(parts, "Dio Heaven Ascension kills: " .. realmSkip .. " | skipping")
+        end
+        for _, bossName in ipairs(plan.Waiting) do
+            table.insert(parts, "waiting for " .. bossName .. " to spawn (world spawn, not summonable, in no dungeon)")
+        end
+        if not deepsharkNeeded then
+            Prestige.Idle = true
+            Prestige.activeWork = nil
+            Prestige.priorityRequest = false
+            Prestige.DungeonWork = nil
+            prestigeActive = false
+            releaseMovement("prestige")
+        end
+        if #parts == 0 and #plan.Parked > 0 then
+            local labels = {}
+            for _, req in ipairs(plan.Parked) do
+                table.insert(labels, Prestige.ParkedTypes[req.Type])
+            end
+            State.PrestigeStatus = string.format("Prestige %d waiting: only %s left (skipped, do it manually)", math.floor(getDataValue("Prestige")) + 1, table.concat(labels, " and "))
+        else
+            if #parts == 0 then
+                table.insert(parts, "missing: " .. missingText)
+            end
+            State.PrestigeStatus = "Prestige: " .. table.concat(parts, " || ") .. Prestige.ParkedSuffix
+        end
+        task.wait(1)
+    end
+end
+
 function Prestige.Start()
     if State.PrestigeEnabled then
         return
@@ -10096,142 +12799,101 @@ function Prestige.Start()
     prestigeThread = task.spawn(function()
         while State.PrestigeEnabled do
             task.wait(0.1)
-
-            local _, playerHumanoid = getRoot()
-            if playerHumanoid and playerHumanoid.Health > 0 then
-                local progress, failureReason = Prestige.getRequirementProgress()
-
-                if not progress then
-                    Prestige.priorityRequest = false
-                    Prestige.activeWork = nil
-                    State.PrestigeStatus = failureReason or "Cannot load prestige requirements"
-                    State.PrestigeMissing = tostring(failureReason)
-                    task.wait(1)
-                else
-                    local missingText = Prestige.describeMissing(progress)
-
-                    if missingText == "" then
-                        State.PrestigeMissing = "none (ready)"
-                        Prestige.priorityRequest = true
-                        Prestige.activeWork = "prestige"
-                        local success = false
-
-                        if (Prestige.remoteFailures or 0) < 3 then
-                            State.PrestigeStatus = "Requirements met | prestiging via remote"
-                            success = Prestige.tryRemote()
-                            if not success then
-                                Prestige.remoteFailures = (Prestige.remoteFailures or 0) + 1
-                            end
-                        end
-
-                        if not success then
-                            if acquireMovement("prestige") then
-                                State.PrestigeStatus = "Remote refused | going to " .. prestigeNPCName
-                                success = Prestige.travelAndPrestige(true)
-                                releaseMovement("prestige")
-                                settleCharacter()
-                            else
-                                State.PrestigeStatus = "Ready to prestige, waiting for movement lock"
-                            end
-                        end
-
-                        if success then
-                            Prestige.remoteFailures = 0
-                            Prestige.priorityRequest = false
-                            Prestige.activeWork = nil
-                            State.PrestigeStatus = "Prestige " .. tostring(Prestige.getCurrentValue()) .. " complete!"
-                            Prestige.refreshLive()
-                        end
-                        task.wait(0.5)
-                    else
-                        State.PrestigeMissing = missingText
-                        Prestige.priorityRequest = false
-
-                        local bossRequirement = nil
-                        local bossTarget = nil
-                        local waitingBoss = nil
-                        local materialRequirement = nil
-                        local levelRequirement = nil
-
-                        for _, req in ipairs(progress) do
-                            if not req.Done then
-                                if string.find(req.Type, "Kills$") and req.Type ~= "NPCKills" then
-                                    local bossName = prestigeBossMap[req.Type] or prestigeKillBossMap[req.Type] or req.Name
-                                    if bossName then
-                                        local summonable = summonEntryByName[normalizeName(bossName)] ~= nil
-                                        if not bossRequirement and (summonable or BossFarm.isBossAlive(bossName)) then
-                                            bossRequirement = req
-                                            bossTarget = bossName
-                                        elseif not summonable and not waitingBoss then
-                                            waitingBoss = bossName
-                                        end
-                                    end
-                                elseif req.Type == "Material" then
-                                    materialRequirement = materialRequirement or req
-                                elseif req.Type == "Level" or req.Type == "NPCKills" then
-                                    levelRequirement = levelRequirement or req
-                                end
-                            end
-                        end
-
-                        if bossRequirement then
-                            Prestige.activeWork = "boss " .. tostring(bossTarget)
-                        elseif materialRequirement then
-                            Prestige.activeWork = "item " .. tostring(materialRequirement.Name)
-                        else
-                            Prestige.activeWork = nil
-                        end
-
-                        if bossRequirement then
-                            if acquireMovement("prestige") then
-                                Prestige.handleBossRequirement(bossRequirement, bossTarget)
-                                releaseMovement("prestige")
-                            else
-                                State.PrestigeStatus = "Boss " .. bossTarget .. " pending | waiting for movement lock"
-                                task.wait(0.3)
-                            end
-                        elseif materialRequirement then
-                            State.PrestigeStatus = string.format("Prestige Item: %s (%d/%d) | %s", tostring(materialRequirement.Name), math.floor(materialRequirement.Current), math.floor(materialRequirement.Needed), describeMaterialPlan(materialRequirement.Name))
-                            if acquireMovement("prestige") then
-                                UnlockFarm.gatherMaterial(materialRequirement.Name, materialRequirement.Needed, materialRequirement.Current, nil, "prestige")
-                                releaseMovement("prestige")
-                            else
-                                task.wait(0.3)
-                            end
-                        elseif levelRequirement then
-                            local otherMode = Prestige.getOtherFarmMode()
-                            if otherMode then
-                                State.PrestigeStatus = otherMode .. " is running | prestige waits for " .. string.format("%s %d/%d", tostring(levelRequirement.Label), math.floor(levelRequirement.Current), math.floor(levelRequirement.Needed))
-                                task.wait(0.5)
-                            elseif acquireMovement("prestige") then
-                                Prestige.handleLevelRequirement(levelRequirement)
-                                releaseMovement("prestige")
-                            else
-                                task.wait(0.3)
-                            end
-                        else
-                            if waitingBoss then
-                                State.PrestigeStatus = "Waiting for " .. waitingBoss .. " to spawn | missing: " .. missingText
-                            else
-                                State.PrestigeStatus = "Missing: " .. missingText
-                            end
-                            task.wait(1)
-                        end
-                    end
-                end
+            local ok, stepError = pcall(Prestige.step)
+            if not ok then
+                releaseMovement("prestige")
+                Extras.Twoh.releaseRealm("prestige")
+                State.PrestigeStatus = "Prestige error: " .. tostring(stepError) .. " | retrying in 3s"
+                task.wait(3)
             end
         end
 
         Prestige.priorityRequest = false
         Prestige.activeWork = nil
+        Prestige.DungeonWork = nil
         prestigeActive = false
         releaseMovement("prestige")
+        Extras.Twoh.releaseRealm("prestige")
+        Prestige.restoreHelper()
     end)
+end
+
+function Prestige.step()
+    local _, playerHumanoid = getRoot()
+    if not playerHumanoid or playerHumanoid.Health <= 0 then
+        State.PrestigeStatus = "Prestige: dead | waiting for respawn" .. (Prestige.DungeonWork and (" | " .. tostring(Prestige.DungeonWork)) or "")
+        task.wait(0.5)
+        return
+    end
+    local progress, failureReason = Prestige.getRequirementProgress()
+
+    if not progress then
+        Prestige.Idle = true
+        releaseMovement("prestige")
+        Prestige.priorityRequest = false
+        Prestige.activeWork = nil
+        Prestige.DungeonWork = nil
+        State.PrestigeStatus = failureReason or "Cannot load prestige requirements"
+        State.PrestigeMissing = tostring(failureReason)
+        task.wait(1)
+        return
+    end
+
+    local missingText = Prestige.describeMissing(progress)
+
+    if missingText ~= "" then
+        State.PrestigeMissing = missingText
+        Prestige.priorityRequest = false
+        Prestige.handleMissing(progress, missingText)
+        return
+    end
+
+    Prestige.Idle = false
+    Extras.requestDeepshark("prestige", false)
+    Extras.Twoh.releaseRealm("prestige")
+    Prestige.DungeonWork = nil
+    State.PrestigeMissing = "none (ready)"
+    Prestige.priorityRequest = true
+    Prestige.activeWork = "prestige"
+    local success = false
+    local insideDungeon = typeof(workspaceService:GetAttribute("Dungeon")) == "string"
+
+    if (Prestige.remoteFailures or 0) < 3 or (insideDungeon and os.clock() - (Prestige.LeaveSentAt or 0) > 15) then
+        State.PrestigeStatus = "Requirements met | prestiging via remote"
+        success = Prestige.tryRemote()
+        if not success then
+            Prestige.remoteFailures = (Prestige.remoteFailures or 0) + 1
+        end
+    end
+
+    if not success and insideDungeon then
+        Prestige.leaveDungeon("requirements met | leaving to prestige on the main map")
+    elseif not success then
+        if acquireMovement("prestige") then
+            State.PrestigeStatus = "Remote refused | going to " .. prestigeNPCName
+            success = Prestige.travelAndPrestige(true)
+            releaseMovement("prestige")
+            settleCharacter()
+        else
+            State.PrestigeStatus = "Ready to prestige, waiting for " .. tostring(Extras.PriorityRequest or movementOwner) .. " to finish"
+        end
+    end
+
+    if success then
+        Prestige.remoteFailures = 0
+        Prestige.priorityRequest = false
+        Prestige.activeWork = nil
+        State.PrestigeStatus = "Prestige " .. tostring(Prestige.getCurrentValue()) .. " complete!"
+        Prestige.refreshLive()
+    end
+    task.wait(0.5)
 end
 
 function Prestige.Stop()
     State.PrestigeEnabled = false
+    Prestige.Idle = false
     State.PrestigeStatus = "Idle"
+    Extras.requestDeepshark("prestige", false)
     Prestige.priorityRequest = false
     Prestige.activeWork = nil
     for _, connection in ipairs(getgenv().HubPrestigeConnections or {}) do
@@ -10240,14 +12902,27 @@ function Prestige.Stop()
         end)
     end
     getgenv().HubPrestigeConnections = {}
-    local wasTravelling = prestigeActive
+    local wasTravelling = prestigeActive or movementOwner == "prestige"
     prestigeActive = false
     travelActive = false
     lockedTargetCFrame = nil
+    Prestige.DungeonWork = nil
     releaseMovement("prestige")
     if prestigeThread then
         task.cancel(prestigeThread)
         prestigeThread = nil
+    end
+    if Extras.Twoh.Delegated and not State.AutoTwohEnabled then
+        wasTravelling = true
+        Extras.clearCombatLocks()
+    end
+    Extras.Twoh.releaseRealm("prestige")
+    Prestige.restoreHelper()
+    if Extras.PortalReplyConnection then
+        pcall(function()
+            Extras.PortalReplyConnection:Disconnect()
+        end)
+        Extras.PortalReplyConnection = nil
     end
     if wasTravelling then
         stopTween()
@@ -11621,6 +14296,13 @@ function BossFarm.summonBoss(catalogItem)
     end
 
     setFarmStatus("Summoning " .. catalogItem.Name .. " (" .. tostring(difficulty or "default") .. ")")
+    local wantedName = normalizeName(catalogItem.Name)
+    local spawnSeen = false
+    local seenConnection = enemiesFolder.ChildAdded:Connect(function(child)
+        if normalizeName(stripBossTag(child.Name)) == wantedName then
+            spawnSeen = true
+        end
+    end)
     local outcome = attemptSpawn()
 
     if outcome == "far" then
@@ -11629,15 +14311,19 @@ function BossFarm.summonBoss(catalogItem)
         outcome = attemptSpawn()
     end
 
+    if outcome == "spawned" then
+        setFarmStatus(catalogItem.Name .. " summoned | engaging")
+        local streamDeadline = os.clock() + 6
+        while os.clock() < streamDeadline and not spawnSeen and not BossFarm.isBossAlive(catalogItem.Name) do
+            task.wait(0.05)
+        end
+    end
+    seenConnection:Disconnect()
+
     closeSummonUI()
     lockedTargetCFrame = nil
 
     if outcome == "spawned" then
-        setFarmStatus(catalogItem.Name .. " summoned | engaging")
-        local streamDeadline = os.clock() + 6
-        while os.clock() < streamDeadline and not BossFarm.isBossAlive(catalogItem.Name) do
-            task.wait(0.2)
-        end
         return true
     end
 
@@ -11804,6 +14490,9 @@ function BossFarm.prepareAndKill(catalogItem, stopCondition, ownerName)
         local summoned, summonOccupant = BossFarm.summonBoss(catalogItem)
         if summoned then
             bossSummonCooldown[bossName] = nil
+            if not BossFarm.isBossAlive(bossName) then
+                return true
+            end
             return farmMobWithAnchor(bossName, stopCondition, true)
         end
 
@@ -11841,10 +14530,10 @@ function BossFarm.prepareAndKill(catalogItem, stopCondition, ownerName)
     end
 
     for _, shortfall in ipairs(shortfalls) do
-        if shortfall.Kind == "item" and shortfall.Item == "Boss Ticket" and State.AutoBuyBossTicket then
+        if shortfall.Kind == "item" and shortfall.Item == "Boss Ticket" and (State.AutoBuyBossTicket or ownerName == "solemn" or ownerName == "bankai" or ownerName == "dungeon" or ownerName == "twoh") then
             local buyAmount = shortfall.Need - shortfall.Have
-            if ownerName == "solemn" or ownerName == "bankai" then
-                buyAmount = math.max(buyAmount, Extras.Solemn.TicketBatch)
+            if ownerName == "solemn" or ownerName == "bankai" or ownerName == "twoh" then
+                buyAmount = math.max(buyAmount, Extras.Solemn.TicketBatch, math.min(999, math.floor(getMoney() * 0.9 / 30000)))
             end
             if Extras.buyBossTickets(buyAmount) then
                 return false
@@ -12388,11 +15077,18 @@ function UIController.setStatPriority(slotIndex, statName)
     end
 
     State.StatPriority = ordered
+    UIController.syncStatDropdowns()
+    task.spawn(autoAllocateStats)
+end
 
+function UIController.syncStatDropdowns()
     for index, dropdown in ipairs(UIController.StatDropdowns or {}) do
-        if dropdown and ordered[index] then
+        local statName = State.StatPriority[index]
+        local optionIndex = table.find(statNames, statName)
+        if dropdown and optionIndex then
             pcall(function()
-                dropdown:UpdateSelection(ordered[index])
+                dropdown:UpdateSelection(optionIndex)
+                dropdown:UpdateName(UIController.StatSlotLabels[index] .. " • " .. StatMeta.Display[statName])
             end)
         end
     end
@@ -12429,7 +15125,7 @@ function UIController.refreshStatus(includeHeavy)
     if UIController.StatParagraph then
         local lines = {}
         for index, statName in ipairs(getStatPriorityOrder()) do
-            table.insert(lines, string.format("%d. %s %d/%d", index, statName, math.floor(getDataValue(statName)), statCap))
+            table.insert(lines, string.format("%d. %s %d/%d", index, StatMeta.Display[statName] or statName, math.floor(getDataValue(statName)), StatMeta.getCap()))
         end
         table.insert(lines, "Points: " .. tostring(math.floor(getDataValue("Points"))))
         pcall(function()
@@ -12509,6 +15205,154 @@ function UIController.startStatusRefresh()
     end)
 end
 
+UIController.Settings = { Path = "LEGACY PIECE/hub_settings_default.json", Values = {}, Elements = {}, Dirty = false }
+
+function UIController.recordSetting(kind, name, config, value)
+    local settings = UIController.Settings
+    if kind == "Dropdown" and config.Multi then
+        local current = {}
+        for _, optionName in ipairs(typeof(settings.Values[name]) == "table" and settings.Values[name] or {}) do
+            current[optionName] = true
+        end
+        if typeof(value) == "string" then
+            current[value] = not current[value] or nil
+        elseif typeof(value) == "table" then
+            current = {}
+            for key, picked in pairs(value) do
+                if typeof(key) == "number" then
+                    current[picked] = true
+                elseif picked then
+                    current[key] = true
+                end
+            end
+        end
+        local list = {}
+        for optionName in pairs(current) do
+            table.insert(list, optionName)
+        end
+        table.sort(list)
+        settings.Values[name] = list
+    elseif typeof(value) == "boolean" or typeof(value) == "number" or typeof(value) == "string" then
+        settings.Values[name] = value
+    else
+        return
+    end
+    settings.Dirty = true
+end
+
+function UIController.trackToggles(tab)
+    local originalSection = tab.Section
+    if typeof(originalSection) ~= "function" then
+        return
+    end
+    tab.Section = function(tabSelf, sectionConfig)
+        local section = originalSection(tabSelf, sectionConfig)
+        for _, kind in ipairs({ "Toggle", "Dropdown", "Slider", "Input" }) do
+            local originalControl = section and section[kind]
+            if typeof(originalControl) == "function" then
+                section[kind] = function(sectionSelf, controlConfig)
+                    local name = typeof(controlConfig) == "table" and controlConfig.Name or nil
+                    local entry = nil
+                    if name and typeof(controlConfig.Callback) == "function" then
+                        local userCallback = controlConfig.Callback
+                        entry = { Kind = kind, Callback = userCallback, Config = controlConfig }
+                        controlConfig.Callback = function(value, ...)
+                            UIController.recordSetting(kind, name, controlConfig, value)
+                            return userCallback(value, ...)
+                        end
+                    end
+                    local control = originalControl(sectionSelf, controlConfig)
+                    if entry then
+                        entry.Object = control
+                        UIController.Settings.Elements[name] = entry
+                    end
+                    if kind == "Toggle" and name then
+                        UIController.Toggles[name] = control
+                    end
+                    return control
+                end
+            end
+        end
+        return section
+    end
+end
+
+function UIController.restoreSettings()
+    local settings = UIController.Settings
+    local saved = nil
+    pcall(function()
+        saved = httpService:JSONDecode(readfile(settings.Path))
+    end)
+    if typeof(saved) ~= "table" then
+        return false
+    end
+    settings.Values = saved
+    local farmToggles = {}
+    for _, entry in ipairs(Extras.Session.Map) do
+        farmToggles[entry[2]] = true
+    end
+    farmToggles["Auto Araya (Lost Afterimage)"] = true
+    for _, slotLabel in ipairs(UIController.StatSlotLabels or {}) do
+        saved[slotLabel] = nil
+    end
+    local function apply(name, entry, value)
+        pcall(function()
+            if entry.Kind == "Toggle" then
+                entry.Object:UpdateState(value == true)
+            elseif entry.Kind == "Slider" then
+                entry.Object:UpdateValue(value)
+                entry.Callback(value)
+            elseif entry.Kind == "Input" then
+                entry.Object:UpdateText(tostring(value))
+                entry.Callback(tostring(value))
+            elseif entry.Kind == "Dropdown" then
+                if entry.Config.Multi then
+                    local map = {}
+                    for _, optionName in ipairs(value) do
+                        map[optionName] = true
+                    end
+                    entry.Object:UpdateSelection(value)
+                    entry.Callback(map)
+                else
+                    local index = table.find(entry.Config.Options or {}, value)
+                    if index then
+                        entry.Object:UpdateSelection(index)
+                        entry.Callback(value)
+                    end
+                end
+            end
+        end)
+    end
+    for pass = 1, 3 do
+        for name, value in pairs(saved) do
+            local entry = settings.Elements[name]
+            if entry then
+                local isToggle = entry.Kind == "Toggle"
+                local isFarm = farmToggles[name] == true
+                if (pass == 1 and not isToggle) or (pass == 2 and isToggle and not isFarm) or (pass == 3 and isToggle and isFarm and value == true) then
+                    apply(name, entry, value)
+                end
+            end
+        end
+    end
+    settings.Dirty = false
+    return true
+end
+
+function UIController.startSettingsSaver()
+    local token = getgenv().HubSessionToken
+    task.spawn(function()
+        while token and getgenv().HubSessionToken == token do
+            local settings = UIController.Settings
+            if settings.Dirty then
+                settings.Dirty = false
+                pcall(writefile, settings.Path, httpService:JSONEncode(settings.Values))
+            end
+            task.wait(2)
+        end
+    end)
+end
+
 function UIController.Init()
     local questOptionsList = {}
     for qName, qInfo in pairs(questData.Main) do
@@ -12535,12 +15379,20 @@ function UIController.Init()
         State.SelectedQuest = questOptionsList[1].Name
     end
 
+    if getgenv().HubWindow then
+        pcall(function()
+            getgenv().HubWindow:Unload()
+        end)
+        getgenv().HubWindow = nil
+    end
+
     local Window = MacLib:Window({
         Title = "Auto Farm Hub",
         Subtitle = "Universal Edition",
         Size = UDim2.fromOffset(800, 500),
         DragStyle = 1
     })
+    getgenv().HubWindow = Window
 
     local TabGroup = Window:TabGroup()
     local MainTab = TabGroup:Tab({ Name = "Automation", Image = "rbxassetid://10723407389" })
@@ -12548,6 +15400,10 @@ function UIController.Init()
     local BossTab = TabGroup:Tab({ Name = "Bosses", Image = "rbxassetid://10723407389" })
     local UnlockTab = TabGroup:Tab({ Name = "Unlock", Image = "rbxassetid://10723407389" })
     local ExtrasTab = TabGroup:Tab({ Name = "Extras", Image = "rbxassetid://10723407389" })
+    UIController.Toggles = {}
+    for _, tab in ipairs({ MainTab, StatTab, BossTab, UnlockTab, ExtrasTab }) do
+        UIController.trackToggles(tab)
+    end
 
     local leftSection = MainTab:Section({ Side = "Left" })
     local rightSection = MainTab:Section({ Side = "Right" })
@@ -12614,14 +15470,6 @@ function UIController.Init()
         Default = true,
         Callback = function(value)
             State.AutoUseSkills = value
-        end
-    })
-
-    leftSection:Toggle({
-        Name = "Auto Dodge Enemy Hitboxes",
-        Default = State.AutoDodge,
-        Callback = function(value)
-            State.AutoDodge = value == true
         end
     })
 
@@ -12734,6 +15582,15 @@ function UIController.Init()
         Default = false,
         Callback = function(value)
             if value then
+                if not UIController.Restoring then
+                    local halt = Extras.Twoh.loadState().Halt
+                    if Extras.Twoh.HaltReason or (typeof(halt) == "string" and halt ~= "") then
+                        Extras.Twoh.HaltReason = nil
+                        Extras.Twoh.saveState({ Halt = "", LoseStreak = 0 })
+                    end
+                    Extras.Twoh.PrestigeGiveUpUntil = nil
+                    Prestige.DungeonBlocked = {}
+                end
                 Prestige.Start()
             else
                 Prestige.Stop()
@@ -12854,64 +15711,24 @@ function UIController.Init()
         end
     })
 
-    rightSection:Header({ Text = "Travel Settings" })
-    rightSection:Toggle({
-        Name = "Ability Flight for Long Trips (600+ studs, uses your ability's flight skill)",
-        Default = State.AbilityFlight,
-        Callback = function(value)
-            State.AbilityFlight = value == true
-        end
-    })
-    rightSection:Toggle({
-        Name = "Pause After Server Pull-Back (hold, then walk if repeated)",
-        Default = State.PullBackPause,
-        Callback = function(value)
-            State.PullBackPause = value == true
-        end
-    })
-    rightSection:Toggle({
-        Name = "Safe Travel (walk + game teleports, no flying)",
-        Default = State.SafeTravel,
-        Callback = function(value)
-            State.SafeTravel = value == true
-        end
-    })
-    rightSection:Toggle({
-        Name = "Queue Next Skill While Casting",
-        Default = false,
-        Callback = function(value)
-            State.MultiCastSkills = value
-        end
-    })
-
-    pcall(function()
-        rightSection:Slider({
-            Name = "Max Hop Distance",
-            Default = 180,
-            Minimum = 60,
-            Maximum = 350,
-            DisplayMethod = "Round",
-            Precision = 0,
-            Callback = function(value)
-                State.MaxHopDistance = value
-            end
-        })
-    end)
-
     local statLeft = StatTab:Section({ Side = "Left" })
     local statRight = StatTab:Section({ Side = "Right" })
 
     statLeft:Header({ Text = "Priority Order Auto Stats" })
     statLeft:Toggle({
         Name = "Auto Stats Enabled",
-        Default = true,
+        Default = State.AutoStatEnabled,
         Callback = function(value)
-            State.AutoStatEnabled = value
+            State.AutoStatEnabled = value == true
+            if State.AutoStatEnabled then
+                task.spawn(autoAllocateStats)
+            end
         end
     })
 
     UIController.StatDropdowns = {}
     local slotLabels = { "1st Priority", "2nd Priority", "3rd Priority", "4th Priority" }
+    UIController.StatSlotLabels = slotLabels
 
     for slotIndex, slotLabel in ipairs(slotLabels) do
         local defaultIndex = 1
@@ -12924,15 +15741,17 @@ function UIController.Init()
 
         UIController.StatDropdowns[slotIndex] = statLeft:Dropdown({
             Name = slotLabel,
-            Options = statNames,
+            Options = StatMeta.Options,
             Default = defaultIndex,
             Callback = function(selectedName)
-                if typeof(selectedName) == "string" and statLookup[selectedName] then
-                    UIController.setStatPriority(slotIndex, selectedName)
+                local statName = typeof(selectedName) == "string" and (StatMeta.FromDisplay[selectedName] or selectedName)
+                if statName and statLookup[statName] then
+                    UIController.setStatPriority(slotIndex, statName)
                 end
             end
         })
     end
+    UIController.syncStatDropdowns()
 
     statLeft:Button({
         Name = "Allocate Points Now",
@@ -13039,7 +15858,7 @@ function UIController.Init()
 
     bossRight:Toggle({
         Name = "Auto Summon Boss When Missing",
-        Default = true,
+        Default = State.AutoSummonBoss,
         Callback = function(value)
             State.AutoSummonBoss = value
         end
@@ -13047,7 +15866,7 @@ function UIController.Init()
 
     bossRight:Toggle({
         Name = "Auto Buy Boss Ticket (Gold Shop)",
-        Default = true,
+        Default = State.AutoBuyBossTicket,
         Callback = function(value)
             State.AutoBuyBossTicket = value
         end
@@ -13195,6 +16014,34 @@ function UIController.Init()
         end
     })
 
+    local dungeonOptions = Extras.getDungeonOptions()
+    extrasLeft:Dropdown({
+        Name = "Auto Dungeon Target",
+        Options = dungeonOptions,
+        Default = table.find(dungeonOptions, State.AutoDungeonTarget) or 1,
+        Callback = function(selectedName)
+            if typeof(selectedName) == "string" then
+                State.AutoDungeonTarget = selectedName
+            end
+        end
+    })
+
+    UIController.DungeonToggle = extrasLeft:Toggle({
+        Name = "Auto Dungeon (enter + farm + replay)",
+        Default = false,
+        Callback = function(value)
+            if UIController.IsSyncingUI then
+                return
+            end
+            if value then
+                Extras.startLoop("AutoDungeonEnabled", Extras.runDungeonCycle)
+            else
+                Extras.stopLoop("AutoDungeonEnabled", "dungeon")
+                State.ExtraStatus = "Dungeon: stopped"
+            end
+        end
+    })
+
     if State.DungeonAutoDifficulty or State.DungeonAutoReplay then
         Extras.saveDungeonSettings()
     end
@@ -13256,8 +16103,22 @@ function UIController.Init()
         end
     })
 
+    extrasLeft:Toggle({
+        Name = "Fish At Whale Event (with Auto Fishing)",
+        Default = false,
+        Callback = function(value)
+            if value then
+                Extras.startLoop("AutoWhaleEnabled", Extras.runWhaleCycle)
+            else
+                Extras.stopLoop("AutoWhaleEnabled", "whale")
+                Extras.endWhaleEvent()
+                State.ExtraStatus = "Whale: stopped"
+            end
+        end
+    })
+
     UIController.DeepsharkToggle = extrasLeft:Toggle({
-        Name = "Auto Ancient Deepshark (Abyssal Bait)",
+        Name = "Auto Ancient Deepshark (uses Abyssal Bait)",
         Default = false,
         Callback = function(value)
             if UIController.IsSyncingUI then
@@ -13270,25 +16131,13 @@ function UIController.Init()
             else
                 Extras.stopLoop("AutoDeepsharkEnabled", "deepshark")
                 Extras.endDeepsharkFishing()
+                Extras.releaseDeepsharkPriority()
                 State.ExtraStatus = "Deepshark: stopped"
             end
         end
     })
 
     extrasRight:Header({ Text = "World Events" })
-    extrasRight:Toggle({
-        Name = "Auto Teleport To Whale",
-        Default = false,
-        Callback = function(value)
-            if value then
-                Extras.startLoop("AutoWhaleEnabled", Extras.runWhaleCycle)
-            else
-                Extras.stopLoop("AutoWhaleEnabled", "whale")
-                Extras.endWhaleEvent()
-                State.ExtraStatus = "Whale: stopped"
-            end
-        end
-    })
 
     extrasRight:Toggle({
         Name = "Auto Coffin Page (Mysterious Stranger)",
@@ -13372,6 +16221,38 @@ function UIController.Init()
         end
     })
 
+    extrasRight:Header({ Text = "The World Over Heaven" })
+    UIController.TwohToggle = extrasRight:Toggle({
+        Name = "Auto TWOH (Dio / Earthly Proofs)",
+        Default = false,
+        Callback = function(value)
+            if UIController.IsSyncingUI then
+                return
+            end
+            if value then
+                Extras.Twoh.AcceptSeenAt = {}
+                if not UIController.Restoring then
+                    Extras.Twoh.HaltReason = nil
+                    Extras.Twoh.saveState({ Halt = "", LoseStreak = 0 })
+                end
+                Extras.startLoop("AutoTwohEnabled", Extras.Twoh.runCycle)
+            else
+                Extras.Twoh.stop(false)
+                State.ExtraStatus = "TWOH: stopped"
+            end
+        end
+    })
+
+    extrasRight:Toggle({
+        Name = "Auto Over Heaven Buff (The World B)",
+        Default = false,
+        Callback = function(value)
+            State.AutoOverHeavenEnabled = value == true
+            Extras.OverHeaven.NextTryAt = 0
+            Extras.OverHeaven.Fails = 0
+        end
+    })
+
     extrasRight:Header({ Text = "Ichigo Bankai" })
     UIController.BankaiToggle = extrasRight:Toggle({
         Name = "Auto Ichigo Bankai (Hollow Reaper)",
@@ -13415,9 +16296,10 @@ function UIController.Init()
         Body = "Idle"
     })
 
-    Window:onUnloaded(function()
-        if getgenv().HubCleanup then
-            getgenv().HubCleanup()
+    local ownCleanup = getgenv().HubCleanup
+    Window.onUnloaded(function()
+        if ownCleanup and getgenv().HubCleanup == ownCleanup then
+            ownCleanup()
         end
     end)
 
@@ -13463,14 +16345,597 @@ getgenv().HubDebug = {
     end
 }
 
+Extras.Session = {
+    Path = "LEGACY PIECE/hub_session_default.json",
+    LogPath = "LEGACY PIECE/LP_disconnects.txt",
+    MaxAge = 43200,
+    MainPlaceId = 111097829542198,
+    LastFlags = {},
+    Map = {
+        { "AutoStatEnabled", "Auto Stats Enabled" },
+        { "AutoSummonBoss", "Auto Summon Boss When Missing" },
+        { "AutoBuyBossTicket", "Auto Buy Boss Ticket (Gold Shop)" },
+        { "PrestigeBossAutoTarget", "Auto Farm Missing Prestige Bosses" },
+        { "AutoPickupEnabled", "Auto Pickup (timed spawns first, then nearby)" },
+        { "AutoCodeEnabled", "Auto Code Loop" },
+        { "AutoChestEnabled", "Auto Open Selected Chests" },
+        { "FarmLevelEnabled", "Auto Farm Level" },
+        { "BossFarmEnabled", "Auto Farm Selected Bosses" },
+        { "PrestigeEnabled", "Auto Prestige" },
+        { "AutoFishEnabled", "Auto Fishing (Fast)" },
+        { "AutoDeepsharkEnabled", "Auto Ancient Deepshark (uses Abyssal Bait)" },
+        { "AutoWhaleEnabled", "Fish At Whale Event (with Auto Fishing)" },
+        { "AutoCoffinEnabled", "Auto Coffin Page (Mysterious Stranger)" },
+        { "AutoFireForceTrialEnabled", "Auto Fire Force Trial (Captain Burns)" },
+        { "AutoAmbushOnlyEnabled", "Auto Ambush" },
+        { "AutoAmbushEnabled", "Auto Fire Fighter Company" },
+        { "AutoBankaiEnabled", "Auto Ichigo Bankai (Hollow Reaper)" },
+        { "AutoSolemnEnabled", "Auto Solemn Lament (Griefbound Ferryman)" },
+        { "AutoDungeonEnabled", "Auto Dungeon (enter + farm + replay)" },
+        { "AutoTwohEnabled", "Auto TWOH (Dio / Earthly Proofs)" }
+    }
+}
+
+function Extras.saveSession()
+    local session = Extras.Session
+    local flags = {}
+    for _, entry in ipairs(session.Map) do
+        if State[entry[1]] == true and not (entry[1] == "AutoDeepsharkEnabled" and Extras.DeepsharkDelegated) then
+            table.insert(flags, entry[1])
+        end
+    end
+    session.LastFlags = flags
+    local function selectionList(selection)
+        local names = {}
+        for name, picked in pairs(selection or {}) do
+            if picked then
+                table.insert(names, name)
+            end
+        end
+        table.sort(names)
+        return names
+    end
+    local payload = {
+        Flags = flags,
+        StatPriority = State.StatPriority,
+        BossDifficulty = State.BossDifficulty,
+        BossSelection = selectionList(State.BossSelection),
+        ChestSelection = selectionList(State.ChestSelection),
+        CombatTypes = selectionList(Extras.Twoh.SavedCombat and Extras.Twoh.SavedCombat.Types or State.FarmCombatTypes),
+        PickupTargets = selectionList(State.PickupTargets)
+    }
+    local encoded = httpService:JSONEncode(payload)
+    if encoded == session.LastEncoded and os.clock() - (session.LastWriteAt or 0) < 600 then
+        return
+    end
+    session.LastEncoded = encoded
+    session.LastWriteAt = os.clock()
+    payload.SavedAt = os.time()
+    pcall(writefile, session.Path, httpService:JSONEncode(payload))
+end
+
+function Extras.resumeSession(phase)
+    local session = Extras.Session
+    local saved = nil
+    pcall(function()
+        saved = httpService:JSONDecode(readfile(session.Path))
+    end)
+    if typeof(saved) ~= "table" then
+        return
+    end
+    if phase == "flags" then
+        if typeof(saved.Flags) ~= "table" or #saved.Flags == 0 or os.time() - (tonumber(saved.SavedAt) or 0) > session.MaxAge then
+            return
+        end
+        if typeof(saved.BossSelection) == "table" then
+            for _, bossName in ipairs(saved.BossSelection) do
+                State.BossSelection[bossName] = true
+                local toggle = UIController.Toggles[bossName]
+                if toggle then
+                    pcall(function()
+                        toggle:UpdateState(true)
+                    end)
+                end
+            end
+        end
+        local wanted = {}
+        for _, flagName in ipairs(saved.Flags) do
+            wanted[flagName] = true
+        end
+        for _, entry in ipairs(session.Map) do
+            local toggle = UIController.Toggles[entry[2]]
+            if wanted[entry[1]] and not State[entry[1]] and toggle then
+                pcall(function()
+                    toggle:UpdateState(true)
+                end)
+            end
+        end
+        return
+    end
+    if typeof(saved.StatPriority) == "table" and #saved.StatPriority == #statNames then
+        local valid = true
+        for _, statName in ipairs(saved.StatPriority) do
+            valid = valid and table.find(statNames, statName) ~= nil
+        end
+        if valid then
+            State.StatPriority = saved.StatPriority
+            pcall(UIController.syncStatDropdowns)
+        end
+    end
+    if typeof(saved.BossDifficulty) == "string" then
+        State.BossDifficulty = saved.BossDifficulty
+    end
+    if typeof(saved.CombatTypes) == "table" and #saved.CombatTypes > 0 then
+        State.FarmCombatTypes = {}
+        for _, typeName in ipairs(saved.CombatTypes) do
+            State.FarmCombatTypes[typeName] = true
+        end
+        State.FarmCombatType = State.FarmCombatTypes[State.FarmCombatType] and State.FarmCombatType or saved.CombatTypes[1]
+        pcall(function()
+            UIController.WeaponTypeDropdown:UpdateSelection(saved.CombatTypes)
+        end)
+    end
+    if typeof(saved.PickupTargets) == "table" and #saved.PickupTargets > 0 then
+        for itemName in pairs(State.PickupTargets) do
+            State.PickupTargets[itemName] = false
+        end
+        for _, itemName in ipairs(saved.PickupTargets) do
+            State.PickupTargets[itemName] = true
+        end
+    end
+    if typeof(saved.ChestSelection) == "table" and #saved.ChestSelection > 0 then
+        State.ChestSelection = {}
+        for _, chestName in ipairs(saved.ChestSelection) do
+            State.ChestSelection[chestName] = true
+        end
+    end
+end
+
+function Extras.startSessionSaver()
+    local token = getgenv().HubSessionToken
+    task.spawn(function()
+        while token and getgenv().HubSessionToken == token do
+            Extras.saveSession()
+            task.wait(3)
+        end
+    end)
+end
+
+function Extras.Session.oneLine(value)
+    return (string.gsub(tostring(value or ""), "[\r\n]+", " "))
+end
+
+function Extras.Session.writeLog(line)
+    local path = Extras.Session.LogPath
+    local exists = false
+    pcall(function()
+        exists = isfile(path)
+    end)
+    if exists and pcall(appendfile, path, line) then
+        return true
+    end
+    local previous = ""
+    if exists then
+        pcall(function()
+            previous = readfile(path)
+        end)
+    end
+    return (pcall(writefile, path, previous .. line))
+end
+
+function Extras.Session.describeContext()
+    local session = Extras.Session
+    local yhwach = Extras.Yhwach
+    local serverAge = 0
+    pcall(function()
+        serverAge = math.floor(workspaceService.DistributedGameTime)
+    end)
+    return string.format("job=%s place=%d age=%ds owner=%s priority=%s farms=%s yhwach=%s", game.JobId, game.PlaceId, serverAge, tostring(movementOwner), tostring(Extras.PriorityRequest), table.concat(session.LastFlags, ","), session.oneLine(yhwach and yhwach.StatusText or "nil"))
+end
+
+function Extras.Session.readErrorPrompt()
+    local title, body = "", ""
+    pcall(function()
+        local promptGui = cloneref(game:GetService("CoreGui")):FindFirstChild("RobloxPromptGui")
+        local overlay = promptGui and promptGui:FindFirstChild("promptOverlay")
+        local errorPrompt = overlay and overlay:FindFirstChild("ErrorPrompt")
+        if not errorPrompt then
+            return
+        end
+        for _, descendant in ipairs(errorPrompt:GetDescendants()) do
+            if descendant:IsA("TextLabel") then
+                if descendant.Name == "ErrorTitle" then
+                    title = descendant.Text
+                elseif descendant.Name == "ErrorMessage" then
+                    body = descendant.Text
+                end
+            end
+        end
+    end)
+    return title, body
+end
+
+function Extras.connectAutoRejoin()
+    for _, key in ipairs({ "HubRejoinConnection", "HubTeleportFailConnection" }) do
+        if getgenv()[key] then
+            pcall(function()
+                getgenv()[key]:Disconnect()
+            end)
+            getgenv()[key] = nil
+        end
+    end
+    local guiService = cloneref(game:GetService("GuiService"))
+    local teleportService = cloneref(game:GetService("TeleportService"))
+    getgenv().HubTeleportFailConnection = teleportService.TeleportInitFailed:Connect(function(_, result, errorMessage)
+        local session = Extras.Session
+        session.TeleportFailedAt = os.clock()
+        session.writeLog(string.format("%s TELEPORT FAILED result=%s | %s | %s\n", os.date("%Y-%m-%d %X"), tostring(result), session.oneLine(errorMessage), session.describeContext()))
+    end)
+    getgenv().HubRejoinConnection = guiService.ErrorMessageChanged:Connect(function(message)
+        local session = Extras.Session
+        if typeof(message) ~= "string" or message == "" or session.Rejoining then
+            return
+        end
+        local context = session.describeContext()
+        local errorCode = "unknown"
+        pcall(function()
+            local code = guiService:GetErrorCode()
+            errorCode = string.format("%s(%d)", code.Name, code.Value)
+        end)
+        task.wait(0.5)
+        local promptTitle, promptBody = session.readErrorPrompt()
+        local kickMessage = ""
+        if string.find(errorCode, "Kick", 1, true) or string.find(string.lower(message), "kick", 1, true) then
+            kickMessage = message
+        end
+        session.writeLog(string.format("%s DISCONNECT code=%s | message=%s | prompt=%s / %s | kick=%s | %s\n", os.date("%Y-%m-%d %X"), errorCode, session.oneLine(message), session.oneLine(promptTitle), session.oneLine(promptBody), session.oneLine(kickMessage), context))
+        task.wait(2.5)
+        local replicatorAlive = false
+        pcall(function()
+            local networkClient = game:FindService("NetworkClient")
+            replicatorAlive = networkClient ~= nil and #networkClient:GetChildren() > 0
+        end)
+        local lowered = string.lower(message)
+        local looksDisconnected = string.find(lowered, "disconnect", 1, true) or string.find(lowered, "connection", 1, true) or string.find(lowered, "kick", 1, true)
+        if replicatorAlive and not looksDisconnected then
+            session.writeLog(string.format("%s IGNORED still connected\n", os.date("%Y-%m-%d %X")))
+            return
+        end
+        if #session.LastFlags == 0 and not State.AutoArayaEnabled then
+            session.writeLog(string.format("%s NO REJOIN no farms on\n", os.date("%Y-%m-%d %X")))
+            return
+        end
+        session.Rejoining = true
+        for attempt = 1, 40 do
+            pcall(function()
+                queue_on_teleport(Extras.Araya.HubLoader)
+            end)
+            session.TeleportFailedAt = nil
+            session.writeLog(string.format("%s REJOIN attempt %d Teleport(%d)\n", os.date("%Y-%m-%d %X"), attempt, session.MainPlaceId))
+            local firedAt = os.clock()
+            pcall(function()
+                teleportService:Teleport(session.MainPlaceId, localPlayer)
+            end)
+            while os.clock() - firedAt < 20 and not session.TeleportFailedAt do
+                task.wait(0.5)
+            end
+            if session.TeleportFailedAt then
+                task.wait(4)
+            end
+        end
+    end)
+end
+
+Extras.OverHeaven = { StyleName = "The World", Key = "B", Busy = false, NextTryAt = 0, Fails = 0 }
+
+function Extras.OverHeaven.isActive()
+    local character = localPlayer.Character
+    return character ~= nil and character:GetAttribute("TheWorldOverHeaven") == true
+end
+
+function Extras.OverHeaven.isReady()
+    local readyAt = tonumber(localPlayer:GetAttribute("TheWorldOverHeavenReadyAt"))
+    return readyAt == nil or workspaceService.DistributedGameTime >= readyAt
+end
+
+function Extras.OverHeaven.shouldCast()
+    local overHeaven = Extras.OverHeaven
+    if not State.AutoOverHeavenEnabled or overHeaven.Busy or os.clock() < overHeaven.NextTryAt then
+        return false
+    end
+    if localPlayer:GetAttribute("TheWorldOverHeavenEarned") ~= true or overHeaven.isActive() or not overHeaven.isReady() then
+        return false
+    end
+    local rootPart, playerHumanoid = getRoot()
+    if not rootPart or not playerHumanoid or playerHumanoid.Health <= 0 or Extras.isGameHoldingCharacter(rootPart) then
+        return false
+    end
+    if rootPart:FindFirstChild("Swim") or pickupActive or (Extras.Twoh and Extras.Twoh.SealPrompt) then
+        return false
+    end
+    return getInventoryAmount(overHeaven.StyleName) > 0
+end
+
+function Extras.OverHeaven.cast()
+    local overHeaven = Extras.OverHeaven
+    local character = localPlayer.Character
+    local playerHumanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not playerHumanoid then
+        return
+    end
+    overHeaven.Busy = true
+    local previousTool = character:FindFirstChildOfClass("Tool")
+    if not isItemEquipped(overHeaven.StyleName) then
+        equipInventoryItem(overHeaven.StyleName)
+        task.wait(0.5)
+    end
+    local styleTool = character:FindFirstChild(overHeaven.StyleName)
+    local backpack = localPlayer:FindFirstChild("Backpack")
+    if not styleTool and backpack then
+        styleTool = backpack:FindFirstChild(overHeaven.StyleName)
+        if styleTool then
+            pcall(function()
+                playerHumanoid:EquipTool(styleTool)
+            end)
+            task.wait(0.4)
+        end
+    end
+    if styleTool and styleTool.Parent == character then
+        local rootPart = getRoot()
+        pcall(function()
+            inputEvent:FireServer("Tool", styleTool, overHeaven.Key, rootPart and (rootPart.Position + rootPart.CFrame.LookVector * 20) or Vector3.zero)
+        end)
+        local deadline = os.clock() + 8
+        while os.clock() < deadline and not overHeaven.isActive() do
+            task.wait(0.1)
+        end
+    end
+    if overHeaven.isActive() then
+        overHeaven.Fails = 0
+        overHeaven.NextTryAt = os.clock() + 5
+    else
+        overHeaven.Fails = overHeaven.Fails + 1
+        overHeaven.NextTryAt = os.clock() + math.min(20 * overHeaven.Fails, 120)
+    end
+    if previousTool and previousTool ~= styleTool and previousTool.Parent and not isFarmActive() then
+        pcall(function()
+            playerHumanoid:EquipTool(previousTool)
+        end)
+    end
+    overHeaven.Busy = false
+end
+
+function Extras.OverHeaven.start()
+    local token = getgenv().HubSessionToken
+    task.spawn(function()
+        while token and getgenv().HubSessionToken == token do
+            if Extras.OverHeaven.shouldCast() then
+                local ok = pcall(Extras.OverHeaven.cast)
+                if not ok then
+                    Extras.OverHeaven.Busy = false
+                    Extras.OverHeaven.NextTryAt = os.clock() + 20
+                end
+            end
+            task.wait(1)
+        end
+    end)
+end
+
+function Extras.connectAntiAfk()
+    if getgenv().HubIdleConnection then
+        pcall(function()
+            getgenv().HubIdleConnection:Disconnect()
+        end)
+    end
+    local virtualUser = cloneref(game:GetService("VirtualUser"))
+    getgenv().HubIdleConnection = localPlayer.Idled:Connect(function()
+        Extras.Session.IdleNudges = (Extras.Session.IdleNudges or 0) + 1
+        pcall(function()
+            virtualUser:CaptureController()
+            virtualUser:ClickButton2(Vector2.new())
+        end)
+        Extras.Session.nudgeMouse()
+    end)
+    local token = getgenv().HubSessionToken
+    task.spawn(function()
+        while token and getgenv().HubSessionToken == token do
+            task.wait(30)
+            if Extras.Session.gameIdleSeconds() >= Extras.Session.MouseNudgeAfter then
+                Extras.Session.nudgeMouse()
+            end
+        end
+    end)
+end
+
+Extras.Session.MouseNudgeAfter = 120
+
+function Extras.Session.gameIdleSeconds()
+    local lastActive = localPlayer:GetAttribute("_AFKClientLastActive")
+    if type(lastActive) ~= "number" then
+        return math.huge
+    end
+    return os.clock() - lastActive
+end
+
+function Extras.Session.nudgeMouse()
+    local session = Extras.Session
+    pcall(function()
+        local inputManager = cloneref(game:GetService("VirtualInputManager"))
+        local mouseLocation = cloneref(game:GetService("UserInputService")):GetMouseLocation()
+        inputManager:SendMouseMoveEvent(mouseLocation.X + 1, mouseLocation.Y, game)
+        task.wait(0.05)
+        inputManager:SendMouseMoveEvent(mouseLocation.X, mouseLocation.Y, game)
+        session.MouseNudges = (session.MouseNudges or 0) + 1
+        session.LastMouseNudgeAt = os.date("%X")
+    end)
+end
+
+function Extras.releaseCharacter()
+    stopTween()
+    travelActive = false
+    lockedEnemyRoot = nil
+    lockedTargetCFrame = nil
+    Extras.Walking = nil
+    local rootPart, playerHumanoid = getRoot()
+    if not rootPart or not playerHumanoid then
+        return
+    end
+    removeFloat(rootPart)
+    local playerCharacter = rootPart.Parent
+    for _, partName in ipairs({ "HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso", "Head" }) do
+        local part = playerCharacter and playerCharacter:FindFirstChild(partName)
+        if part and part:IsA("BasePart") then
+            part.CanCollide = true
+        end
+    end
+    rootPart.AssemblyLinearVelocity = Vector3.zero
+    rootPart.AssemblyAngularVelocity = Vector3.zero
+    playerHumanoid.PlatformStand = false
+    local humanoidState = playerHumanoid:GetState()
+    if humanoidState == Enum.HumanoidStateType.Physics or humanoidState == Enum.HumanoidStateType.PlatformStanding then
+        pcall(function()
+            playerHumanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end)
+    end
+    task.spawn(function()
+        if not pcall(Extras.settleOnLand) then
+            Extras.Settling = false
+        end
+    end)
+end
+
+function Extras.findStandableLand(origin)
+    local raycastParams = buildRaycastParams()
+    for _, castHeight in ipairs({ 40, 400 }) do
+        for radius = 0, 300, 15 do
+            local best, bestScore = nil, math.huge
+            local steps = math.max(1, math.floor(radius / 6))
+            for step = 0, steps - 1 do
+                local angle = (step / steps) * math.pi * 2
+                local probe = origin + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+                local hit = workspaceService:Raycast(Vector3.new(probe.X, origin.Y + castHeight, probe.Z), Vector3.new(0, -(castHeight + 500), 0), raycastParams)
+                if hit and hit.Position.Y > 3 and hit.Normal.Y > 0.7 then
+                    local score = Vector3.new(hit.Position.X - origin.X, 0, hit.Position.Z - origin.Z).Magnitude + math.abs(hit.Position.Y - origin.Y)
+                    if score < bestScore then
+                        best, bestScore = hit.Position, score
+                    end
+                end
+            end
+            if best then
+                return best
+            end
+        end
+    end
+    return nil
+end
+
+function Extras.settleOnLand()
+    if Extras.Settling then
+        return
+    end
+    local rootPart, playerHumanoid = getRoot()
+    if not rootPart or not playerHumanoid or playerHumanoid.Health <= 0 then
+        return
+    end
+    local swimHold = rootPart:FindFirstChild("Swim")
+    local groundHit = workspaceService:Raycast(rootPart.Position, Vector3.new(0, -8, 0), buildRaycastParams())
+    if groundHit and not swimHold then
+        return
+    end
+    local waitUntil = os.clock() + 8
+    while not swimHold do
+        task.wait(0.25)
+        rootPart, playerHumanoid = getRoot()
+        if not rootPart or not playerHumanoid or isFarmActive() or travelActive or os.clock() > waitUntil then
+            return
+        end
+        if playerHumanoid.FloorMaterial ~= Enum.Material.Air then
+            return
+        end
+        swimHold = rootPart:FindFirstChild("Swim") or (rootPart.Position.Y <= 2 and rootPart.AssemblyLinearVelocity.Magnitude < 1 and rootPart)
+    end
+    local land = Extras.findStandableLand(rootPart.Position)
+    if not land then
+        return
+    end
+    Extras.Settling = true
+    local target = CFrame.new(land + Vector3.new(0, 3.5, 0)) * rootPart.CFrame.Rotation
+    local floatForce = getOrCreateFloat(rootPart)
+    local landTween = tweenService:Create(rootPart, TweenInfo.new(math.max((target.Position - rootPart.Position).Magnitude / 60, 0.1), Enum.EasingStyle.Linear), { CFrame = target })
+    landTween:Play()
+    local deadline = os.clock() + 15
+    while landTween.PlaybackState == Enum.PlaybackState.Playing and os.clock() < deadline do
+        if isFarmActive() or travelActive then
+            landTween:Cancel()
+            break
+        end
+        task.wait(0.05)
+    end
+    if not isFarmActive() and not travelActive then
+        pcall(function()
+            floatForce:Destroy()
+        end)
+        rootPart.AssemblyLinearVelocity = Vector3.zero
+        pcall(function()
+            playerHumanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end)
+    end
+    Extras.Settling = false
+end
+
+function Extras.watchCharacterRelease()
+    local token = getgenv().HubSessionToken
+    task.spawn(function()
+        local function anythingMoving()
+            return isFarmActive() or travelActive or pickupActive
+        end
+        local wasActive = anythingMoving()
+        if not wasActive then
+            Extras.releaseCharacter()
+        end
+        while token and getgenv().HubSessionToken == token do
+            local active = anythingMoving()
+            if wasActive and not active then
+                task.wait(0.3)
+                active = anythingMoving()
+                if not active then
+                    Extras.releaseCharacter()
+                end
+            elseif not active then
+                local rootPart = getRoot()
+                if rootPart and rootPart:FindFirstChild("FarmFloat") and not Extras.Settling then
+                    Extras.releaseCharacter()
+                end
+            end
+            wasActive = active
+            task.wait(0.25)
+        end
+    end)
+end
+
+if not getgenv().HubDefaultResume then
+    for _, path in ipairs({ UIController.Settings.Path, Extras.Session.Path, Extras.Araya.SettingsPath, Extras.DungeonSettingsPath }) do
+        pcall(writefile, path, "{}")
+    end
+end
 UIController.Init()
+Extras.connectAntiAfk()
+Extras.OverHeaven.start()
 Extras.connectItemIndicators()
 Extras.watchCoffins()
-if workspaceService:GetAttribute("Dungeon") == nil and Extras.loadArayaSettings().Enabled ~= true then
-    Extras.startFastFishing()
-    Extras.syncToggle("FishToggle", true)
+if getgenv().HubDefaultResume then
+    getgenv().HubDefaultResume = nil
+    Extras.resumeArayaAfterTeleport()
+    UIController.Restoring = true
+    Extras.resumeSession("values")
+    if not UIController.restoreSettings() then
+        Extras.resumeSession("flags")
+    end
+    UIController.Restoring = false
 end
-AutoChest.Start()
-Extras.syncToggle("ChestToggle", true)
-Extras.resumeArayaAfterTeleport()
+UIController.Settings.Dirty = true
+UIController.startSettingsSaver()
+Extras.watchCharacterRelease()
+Extras.startSessionSaver()
+Extras.connectAutoRejoin()
 
