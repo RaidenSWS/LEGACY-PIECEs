@@ -59,6 +59,7 @@ local State = {
     FarmCombatTypes = { Sword = true, Ability = true },
     FarmSkills = { Z = true, X = true, C = true, V = false, F = false, B = false },
     AutoUseSkills = true,
+    AutoOverHeavenEnabled = false,
     MultiCastSkills = false,
     FarmDistance = 25,
     FarmPosition = "Below",
@@ -99,6 +100,8 @@ local State = {
     AutoDungeonTarget = "Realm Beyond Heaven (TWOH)",
     AutoBankaiEnabled = false,
     AutoSolemnEnabled = false,
+    AutoIchigoEnabled = false,
+    AutoTatsumakiEnabled = false,
     AutoTraitEnabled = false,
     TraitTargets = {},
     AutoCoffinEnabled = false,
@@ -381,11 +384,11 @@ for _, group in ipairs(bossCatalogGroups) do
 end
 
 local function isFarmActive()
-    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or pickupActive or prestigeActive or debugActive or (State.AutoWhaleEnabled and Extras.WhaleActive == true) or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or (State.AutoDeepsharkEnabled and movementOwner == "deepshark") or State.AutoArayaEnabled or State.AutoTwohEnabled or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or State.AutoYhwachEnabled or (State.AutoFishEnabled and movementOwner == "fishing")
+    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or pickupActive or prestigeActive or debugActive or (State.AutoWhaleEnabled and Extras.WhaleActive == true) or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or (State.AutoDeepsharkEnabled and movementOwner == "deepshark") or State.AutoArayaEnabled or State.AutoTwohEnabled or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or State.AutoYhwachEnabled or State.AutoTatsumakiEnabled or State.AutoIchigoEnabled or (State.AutoFishEnabled and movementOwner == "fishing")
 end
 
 function Extras.otherFarmActive()
-    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or State.AutoArayaEnabled or (State.AutoTwohEnabled and not (Extras.Twoh and Extras.Twoh.Idle)) or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or (State.AutoYhwachEnabled and not (Extras.Yhwach and Extras.Yhwach.Idle)) or false
+    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or State.AutoArayaEnabled or (State.AutoTwohEnabled and not (Extras.Twoh and Extras.Twoh.Idle)) or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or (State.AutoYhwachEnabled and not (Extras.Yhwach and Extras.Yhwach.Idle)) or State.AutoTatsumakiEnabled or State.AutoIchigoEnabled or false
 end
 
 local movementOwnerActiveCheck = {
@@ -445,6 +448,12 @@ local movementOwnerActiveCheck = {
     end,
     solemn = function()
         return State.AutoSolemnEnabled
+    end,
+    tatsumaki = function()
+        return State.AutoTatsumakiEnabled
+    end,
+    ichigo = function()
+        return State.AutoIchigoEnabled
     end,
     fireforce = function()
         return State.AutoFireForceTrialEnabled
@@ -10655,6 +10664,10 @@ function Extras.hasBankaiPassive()
         return true
     end
     local dataFolder = localPlayer:FindFirstChild("Data")
+    local titleFolder = dataFolder and dataFolder:FindFirstChild("Titles")
+    if titleFolder and titleFolder:FindFirstChild(bankai.TitleName) then
+        return true
+    end
     local flagValue = dataFolder and dataFolder:FindFirstChild(bankai.PassiveFlag)
     if flagValue and flagValue:IsA("BoolValue") and flagValue.Value then
         return true
@@ -12693,6 +12706,50 @@ function Extras.runSolemnCycle()
     releaseMovement("solemn")
 end
 
+function Extras.runTatsumakiCycle()
+    if UnlockFarm.isOwned("Tatsumaki") or UnlockFarm.isOwned("Storm Esper") then
+        State.ExtraStatus = "Tatsumaki: already owned"
+        Extras.stopLoop("AutoTatsumakiEnabled", "tatsumaki")
+        Extras.syncToggle("TatsumakiToggle", false)
+        return
+    end
+    if not acquireMovement("tatsumaki") then
+        task.wait(0.5)
+        return
+    end
+    local currentAmt = getInventoryAmount("Meteor Fragment")
+    State.ExtraStatus = string.format("Tatsumaki: Meteor Fragments %d/15", currentAmt)
+    UnlockFarm.runTarget("Tatsumaki", "tatsumaki")
+    if State.UnlockStatus and State.UnlockStatus ~= "Idle" then
+        State.ExtraStatus = "Tatsumaki: " .. tostring(State.UnlockStatus)
+    end
+    releaseMovement("tatsumaki")
+end
+
+function Extras.runIchigoCycle()
+    if getInventoryAmount("Ichigo") > 0 or UnlockFarm.isOwned("Ichigo") then
+        State.ExtraStatus = "Ichigo: already owned"
+        Extras.stopLoop("AutoIchigoEnabled", "ichigo")
+        Extras.syncToggle("IchigoToggle", false)
+        return
+    end
+    if not acquireMovement("ichigo") then
+        task.wait(0.5)
+        return
+    end
+    State.ExtraStatus = "Ichigo: farming Ichigo Kurosaki boss"
+    local bossTarget = getTargetEnemy("Ichigo Kurosaki", nil, true)
+    if bossTarget then
+        UnlockFarm.farmMob("Ichigo Kurosaki", function()
+            return State.AutoIchigoEnabled and getInventoryAmount("Ichigo") <= 0 and bossTarget.Parent ~= nil
+        end, true)
+    else
+        State.ExtraStatus = "Ichigo: waiting for Ichigo Kurosaki boss"
+        task.wait(1)
+    end
+    releaseMovement("ichigo")
+end
+
 Extras.DutyBlockedUntil = {}
 Extras.DutyOrder = { "AH", "HR", "CH" }
 
@@ -13757,6 +13814,8 @@ function Extras.stopAll()
     end
     Extras.stopLoop("AutoBankaiEnabled", "bankai")
     Extras.stopLoop("AutoSolemnEnabled", "solemn")
+    Extras.stopLoop("AutoTatsumakiEnabled", "tatsumaki")
+    Extras.stopLoop("AutoIchigoEnabled", "ichigo")
     Extras.DeepsharkRequesters = {}
     Extras.DeepsharkDelegated = false
     if getgenv().HubItemIndicatorConnections then
@@ -14933,7 +14992,113 @@ function UnlockFarm.getCatalog(categoryName)
 end
 
 function UnlockFarm.isOwned(itemName)
-    return getInventoryAmount(itemName) > 0
+    if not itemName or itemName == "" or itemName == "All Unlocked" then
+        return false
+    end
+    if getInventoryAmount(itemName) > 0 then
+        return true
+    end
+    local dataFolder = localPlayer:FindFirstChild("Data")
+    if dataFolder then
+        local curStyle = dataFolder:FindFirstChild("CurrentStyle")
+        if curStyle and curStyle.Value == itemName then
+            return true
+        end
+        local curAbility = dataFolder:FindFirstChild("CurrentAbility")
+        if curAbility and curAbility.Value == itemName then
+            return true
+        end
+        local idxVal = dataFolder:FindFirstChild("Index")
+        if idxVal and idxVal.Value ~= "" then
+            local decoded = nil
+            pcall(function()
+                decoded = httpService:JSONDecode(idxVal.Value)
+            end)
+            if decoded and decoded[itemName] == true then
+                return true
+            end
+        end
+    end
+    local backpack = localPlayer:FindFirstChild("Backpack")
+    if backpack and backpack:FindFirstChild(itemName) then
+        return true
+    end
+    local char = localPlayer.Character
+    if char and char:FindFirstChild(itemName) then
+        return true
+    end
+    return false
+end
+
+UnlockFarm.GuidebookDataCache = nil
+
+function UnlockFarm.getGuidebookData()
+    if UnlockFarm.GuidebookDataCache == nil then
+        local ok, res = pcall(function()
+            local mod = configurationsFolder:FindFirstChild("GuidebookData")
+            return mod and require(mod)
+        end)
+        UnlockFarm.GuidebookDataCache = (ok and typeof(res) == "table") and res or false
+    end
+    return UnlockFarm.GuidebookDataCache or nil
+end
+
+function UnlockFarm.getGuideFor(itemName)
+    local gbd = UnlockFarm.getGuidebookData()
+    if not gbd or not gbd.ObtainGuides or not itemName then
+        return nil
+    end
+    if gbd.ObtainGuides[itemName] then
+        return gbd.ObtainGuides[itemName]
+    end
+    local norm = normalizeName(itemName)
+    for name, guide in pairs(gbd.ObtainGuides) do
+        if normalizeName(name) == norm then
+            return guide
+        end
+    end
+    return nil
+end
+
+function UnlockFarm.getRequiredRace(itemName)
+    if not itemName then
+        return nil
+    end
+    local norm = normalizeName(itemName)
+    if norm == "ancientfishman" or norm == "undeadfishman" then
+        return "Fishman"
+    elseif norm == "ghoul" then
+        return "Ghoul"
+    elseif norm == "quincy" then
+        return "Quincy"
+    end
+    local guide = UnlockFarm.getGuideFor(itemName)
+    if guide then
+        local text = (tostring(guide.Summary) .. " " .. tostring(guide.Link)):lower()
+        if string.find(text, "fishman elder") or string.find(text, "evolve your fishman") then
+            return "Fishman"
+        elseif string.find(text, "quincy herald") and norm == "quincy" then
+            return "Quincy"
+        elseif string.find(text, "ghoul materials") and norm == "ghoul" then
+            return "Ghoul"
+        end
+    end
+    return nil
+end
+
+function UnlockFarm.getPlayerRace()
+    local dataFolder = localPlayer:FindFirstChild("Data")
+    local raceVal = dataFolder and dataFolder:FindFirstChild("Race")
+    return (raceVal and tostring(raceVal.Value)) or ""
+end
+
+function UnlockFarm.canFarm(itemName)
+    local reqRace = UnlockFarm.getRequiredRace(itemName)
+    local curRace = UnlockFarm.getPlayerRace()
+    if reqRace and curRace ~= reqRace then
+        return false, "Requires " .. reqRace .. " race (current: " .. tostring(curRace) .. ")"
+    end
+    return true, nil
 end
 
 function UnlockFarm.getMissing(categoryName)
@@ -15278,7 +15443,7 @@ function UnlockFarm.buyItem(itemName, recipe)
 
     State.UnlockStatus = "Going to " .. recipe.NPC .. " for " .. itemName
     local reached = travelToNPC(targetNPC, function()
-        return State.UnlockEnabled and not UnlockFarm.isOwned(itemName)
+        return (State.UnlockEnabled or State.AutoTatsumakiEnabled or State.AutoIchigoEnabled) and not UnlockFarm.isOwned(itemName)
     end)
 
     if not reached then
@@ -15582,7 +15747,8 @@ function UnlockFarm.gatherMaterial(materialName, neededAmount, currentAmount, pl
     task.wait(3)
 end
 
-function UnlockFarm.runTarget(targetItem)
+function UnlockFarm.runTarget(targetItem, ownerName)
+    ownerName = ownerName or "unlock"
     if UnlockFarm.isOwned(targetItem) then
         State.UnlockStatus = targetItem .. " already unlocked"
         setTargetBox(nil)
@@ -15602,7 +15768,7 @@ function UnlockFarm.runTarget(targetItem)
                 local tatsumakiNPC = findNPCByName("Tatsumaki")
                 if tatsumakiNPC then
                     travelToNPC(tatsumakiNPC, function()
-                        return State.UnlockEnabled and not UnlockFarm.isOwned(targetItem)
+                        return (State.UnlockEnabled or State.AutoTatsumakiEnabled or State.AutoIchigoEnabled) and not UnlockFarm.isOwned(targetItem)
                     end)
                 end
             end
@@ -15639,7 +15805,7 @@ function UnlockFarm.runTarget(targetItem)
     local actionable, missing = UnlockFarm.getActionableRequirement(recipe)
 
     if actionable then
-        UnlockFarm.gatherMaterial(actionable.Item, actionable.Needed, actionable.Current, actionable.Plan)
+        UnlockFarm.gatherMaterial(actionable.Item, actionable.Needed, actionable.Current, actionable.Plan, ownerName)
         return
     end
 
@@ -15689,11 +15855,23 @@ function UnlockFarm.Start()
 
                     local targetItem = State.UnlockTargets[State.UnlockCategory]
 
-                    if not targetItem then
+                    if not targetItem or targetItem == "All Unlocked" then
                         State.UnlockStatus = "No " .. tostring(State.UnlockCategory) .. " target selected"
                         task.wait(1)
+                    elseif UnlockFarm.isOwned(targetItem) then
+                        State.UnlockStatus = targetItem .. " already unlocked!"
+                        if UIController.syncUnlockDropdowns then
+                            UIController.syncUnlockDropdowns(true)
+                        end
+                        task.wait(1)
                     else
-                        UnlockFarm.runTarget(targetItem)
+                        local canFarm, reason = UnlockFarm.canFarm(targetItem)
+                        if not canFarm then
+                            State.UnlockStatus = tostring(reason) .. " | skipping"
+                            task.wait(2)
+                        else
+                            UnlockFarm.runTarget(targetItem)
+                        end
                     end
                 end
 
@@ -15730,35 +15908,73 @@ end
 
 function UnlockFarm.describeTarget(itemName)
     local lines = {}
-    if not itemName then
-        return { "no target selected" }
+    if not itemName or itemName == "" or itemName == "All Unlocked" then
+        return { "All items in this category are unlocked!" }
+    end
+
+    if UnlockFarm.isOwned(itemName) then
+        table.insert(lines, "[STATUS: UNLOCKED / OWNED]")
+    else
+        table.insert(lines, "[STATUS: NOT UNLOCKED (MISSING)]")
+    end
+
+    local reqRace = UnlockFarm.getRequiredRace(itemName)
+    local curRace = UnlockFarm.getPlayerRace()
+    if reqRace then
+        if curRace == reqRace then
+            table.insert(lines, "Race: " .. reqRace .. " [MATCHED: " .. tostring(curRace) .. "]")
+        else
+            table.insert(lines, "Race: " .. reqRace .. " [SKIPPED - You are " .. tostring(curRace) .. "]")
+        end
+    end
+
+    local guide = UnlockFarm.getGuideFor(itemName)
+    if guide then
+        if guide.Summary and guide.Summary ~= "" then
+            table.insert(lines, "Guide: " .. tostring(guide.Summary))
+        end
+        if guide.Link and guide.Link ~= "" then
+            table.insert(lines, "Location/NPC: " .. tostring(guide.Link))
+        end
+        if guide.Steps and #guide.Steps > 0 then
+            for idx, step in ipairs(guide.Steps) do
+                local stepText = step.Title or step.Name or step.Desc or step.Description or step.Text
+                if stepText and stepText ~= "" then
+                    table.insert(lines, string.format("Step %d: %s", idx, tostring(stepText)))
+                end
+            end
+        end
     end
 
     local chain = UnlockFarm.getQuestChainForItem(itemName)
-
     if #chain > 0 then
         local questStates = {}
         for _, questName in ipairs(chain) do
-            local mark = UnlockFarm.isQuestCompleted(questName) and "done" or "todo"
+            local mark = UnlockFarm.isQuestCompleted(questName) and "DONE" or "TODO"
             table.insert(questStates, questName .. "[" .. mark .. "]")
         end
-        table.insert(lines, "quests: " .. table.concat(questStates, " > "))
+        table.insert(lines, "Quests: " .. table.concat(questStates, " > "))
     end
 
     local recipe = unlockRecipes[itemName]
     if recipe then
-        table.insert(lines, "npc: " .. recipe.NPC .. " | choice: " .. tostring(recipe.ChoiceText))
+        table.insert(lines, "NPC: " .. recipe.NPC .. " | Choice: " .. tostring(recipe.ChoiceText))
         local gateText = UnlockFarm.describeGate(recipe)
         if gateText then
-            table.insert(lines, "gate: " .. gateText)
+            table.insert(lines, "Gate: " .. gateText)
         end
-        for materialName, neededAmount in pairs(recipe.Requirement) do
-            table.insert(lines, string.format("%s %d/%d via %s", materialName, math.floor(getInventoryAmount(materialName)), math.floor(neededAmount), describeMaterialPlan(materialName)))
+        if recipe.Money then
+            local currentMoney = getMoney()
+            table.insert(lines, string.format("Money: %s/%s [%s]", formatNumber(currentMoney), formatNumber(recipe.Money), currentMoney >= recipe.Money and "OK" or "NO"))
+        end
+        for materialName, neededAmount in pairs(recipe.Requirement or {}) do
+            local curAmount = getInventoryAmount(materialName)
+            table.insert(lines, string.format("%s: %d/%d [%s] via %s", materialName, math.floor(curAmount), math.floor(neededAmount), curAmount >= neededAmount and "OK" or "NO", describeMaterialPlan(materialName)))
         end
     end
 
-    if #lines == 0 then
-        table.insert(lines, "no unlock path found")
+    if #lines <= 1 then
+        table.insert(lines, "No specific NPC recipe found. Check Guidebook above for source!")
     end
 
     return lines
@@ -17136,6 +17352,45 @@ UIController.BossParagraph = nil
 UIController.UnlockParagraph = nil
 UIController.StatParagraph = nil
 UIController.IsSyncingUI = false
+UIController.StyleDropdown = nil
+UIController.WeaponDropdown = nil
+UIController.AbilityDropdown = nil
+UIController.LastMissingLists = { Style = nil, Weapon = nil, Ability = nil }
+
+function UIController.syncUnlockDropdowns(force)
+    local categories = { "Style", "Weapon", "Ability" }
+    for _, categoryName in ipairs(categories) do
+        local missing = UnlockFarm.getMissing(categoryName)
+        local last = UIController.LastMissingLists[categoryName]
+        local changed = force or (last == nil) or (#last ~= #missing)
+        if not changed and last then
+            for i, name in ipairs(missing) do
+                if last[i] ~= name then
+                    changed = true
+                    break
+                end
+            end
+        end
+
+        if changed then
+            UIController.LastMissingLists[categoryName] = missing
+            local dropdown = UIController[categoryName .. "Dropdown"]
+            if dropdown then
+                local displayList = (#missing > 0) and missing or { "All Unlocked" }
+                pcall(function()
+                    dropdown:ClearOptions()
+                    dropdown:InsertOptions(displayList)
+                    dropdown:UpdateName(string.format("Select %s (%d missing)", categoryName, #missing))
+                    local current = State.UnlockTargets[categoryName]
+                    if not current or not table.find(missing, current) then
+                        State.UnlockTargets[categoryName] = (#missing > 0) and missing[1] or nil
+                        dropdown:UpdateSelection(displayList[1])
+                    end
+                end)
+            end
+        end
+    end
+end
 
 local statusRefreshThread = nil
 
@@ -17295,12 +17550,7 @@ function UIController.refreshStatus(includeHeavy)
         end)
     end
 
-    if UIController.YhwachParagraph and Extras.Yhwach then
-        local yh = Extras.Yhwach
-        pcall(function()
-            UIController.YhwachParagraph:UpdateBody(table.concat({ tostring(yh.StatusText), tostring(yh.Detail), tostring(yh.EtaText), "Farm: " .. tostring(yh.FarmNote or "-") }, "\n"))
-        end)
-    end
+
 
     if UIController.StatParagraph then
         local lines = {}
@@ -17370,15 +17620,68 @@ function UIController.refreshStatus(includeHeavy)
         end)
     end
 
-    if UIController.UnlockParagraph then
-        local targetItem = State.UnlockTargets[State.UnlockCategory]
-        local lines = { "target: " .. tostring(targetItem) }
-        for _, line in ipairs(UnlockFarm.describeTarget(targetItem)) do
-            table.insert(lines, line)
+    if UIController.YhwachParagraph then
+        local lines = {}
+        if State.AutoArayaEnabled then
+            table.insert(lines, "Araya: " .. tostring(State.ExtraStatus))
         end
-        table.insert(lines, "shards: " .. tostring(math.floor(getShards())) .. " | money: " .. tostring(math.floor(getMoney())))
+        if State.AutoTwohEnabled then
+            table.insert(lines, "TWOH: " .. tostring(State.ExtraStatus))
+        end
+        if State.AutoYhwachEnabled and Extras.Yhwach then
+            local yh = Extras.Yhwach
+            local setKills = (yh.setCount and yh.setCount()) or 0
+            local reishi = getInventoryAmount((yh and yh.ReishiItem) or "Reishi Fragment")
+            table.insert(lines, "Yhwach: " .. tostring(yh.StatusText) .. " | " .. tostring(yh.Detail))
+            table.insert(lines, string.format("Statues: %d/5 | Reishi: %d | ETA: %s", setKills, reishi, tostring(yh.EtaText)))
+            if yh.FarmNote then
+                table.insert(lines, "Farm: " .. tostring(yh.FarmNote))
+            end
+        end
+        if State.AutoBankaiEnabled then
+            table.insert(lines, "Bankai: " .. tostring(State.ExtraStatus))
+        end
+        if State.AutoSolemnEnabled then
+            table.insert(lines, "Solemn: " .. tostring(State.ExtraStatus))
+        end
+        if State.AutoTatsumakiEnabled then
+            table.insert(lines, "Tatsumaki: " .. tostring(State.ExtraStatus))
+        end
+        if State.AutoIchigoEnabled then
+            table.insert(lines, "Ichigo: " .. tostring(State.ExtraStatus))
+        end
+        if State.AutoOverHeavenEnabled then
+            table.insert(lines, "Over Heaven Buff: Active")
+        end
+        if #lines == 0 then
+            table.insert(lines, "Idle (Toggle any special power on the left to start)")
+        end
+        local dataFolder = localPlayer:FindFirstChild("Data")
+        local curStyle = dataFolder and dataFolder:FindFirstChild("CurrentStyle") and dataFolder.CurrentStyle.Value
+        local curAbility = dataFolder and dataFolder:FindFirstChild("CurrentAbility") and dataFolder.CurrentAbility.Value
+        local unlAraya = UnlockFarm.isOwned("Araya") or curAbility == "Araya"
+        local unlTwoh = UnlockFarm.isOwned("The World Over Heaven") or curStyle == "The World Over Heaven"
+        local unlYhwach = getInventoryAmount("Quincy Herald") > 0 or getInventoryAmount("Yhwach") > 0
+        local unlTatsu = getInventoryAmount("Tatsumaki") > 0 or getInventoryAmount("Storm Esper") > 0 or curAbility == "Tatsumaki" or curAbility == "Storm Esper"
+        local unlIchigo = getInventoryAmount("Ichigo") > 0
+        local unlBankai = Extras.hasBankaiPassive()
+        local unlSolemn = getInventoryAmount("Solemn Lament") > 0 or getInventoryAmount("Griefbound Ferryman") > 0
+        table.insert(lines, "")
+        local pending = {}
+        if not unlAraya then table.insert(pending, "Araya") end
+        if not unlTwoh then table.insert(pending, "TWOH") end
+        if not unlYhwach then table.insert(pending, "Yhwach") end
+        if not unlTatsu then table.insert(pending, "Tatsumaki") end
+        if not unlIchigo then table.insert(pending, "Ichigo") end
+        if not unlBankai then table.insert(pending, "Ichigo Bankai") end
+        if not unlSolemn then table.insert(pending, "Solemn Lament") end
+        if #pending > 0 then
+            table.insert(lines, "[Pending to Unlock]: " .. table.concat(pending, ", "))
+        else
+            table.insert(lines, "[Status]: All Special Powers Unlocked!")
+        end
         pcall(function()
-            UIController.UnlockParagraph:UpdateBody(table.concat(lines, "\n"))
+            UIController.YhwachParagraph:UpdateBody(table.concat(lines, "\n"))
         end)
     end
 end
@@ -17889,6 +18192,16 @@ function UIController.Init()
         Default = true,
         Callback = function(value)
             State.AutoUseSkills = value
+        end
+    })
+
+    UIController.OverHeavenToggle = leftSection:Toggle({
+        Name = "Auto Over Heaven Buff (The World B)",
+        Default = false,
+        Callback = function(value)
+            State.AutoOverHeavenEnabled = value == true
+            Extras.OverHeaven.NextTryAt = 0
+            Extras.OverHeaven.Fails = 0
         end
     })
 
@@ -18432,77 +18745,144 @@ function UIController.Init()
     local unlockLeft = UnlockTab:Section({ Side = "Left" })
     local unlockRight = UnlockTab:Section({ Side = "Right" })
 
-    for _, categoryName in ipairs({ "Style", "Weapon", "Ability" }) do
-        local missingList = UnlockFarm.getMissing(categoryName)
-        local farmableList = {}
+    unlockLeft:Header({ Text = "Special Powers (Guidebook)" })
 
-        for _, itemName in ipairs(missingList) do
-            if unlockRecipes[itemName] or #UnlockFarm.getQuestChainForItem(itemName) > 0 then
-                table.insert(farmableList, itemName)
-            end
-        end
-
-        local optionList = farmableList
-        if #optionList == 0 then
-            optionList = missingList
-        end
-        if #optionList == 0 then
-            optionList = UnlockFarm.getCatalog(categoryName)
-        end
-
-        State.UnlockTargets[categoryName] = optionList[1]
-
-        unlockLeft:Header({ Text = categoryName .. " (" .. tostring(#farmableList) .. " farmable / " .. tostring(#missingList) .. " missing)" })
-        unlockLeft:Dropdown({
-            Name = "Select " .. categoryName,
-            Options = optionList,
-            Default = 1,
-            Callback = function(selectedName)
-                State.UnlockTargets[categoryName] = selectedName
-            end
-        })
-    end
-
-    unlockRight:Header({ Text = "Auto Unlock" })
-    unlockRight:Dropdown({
-        Name = "Farm Category",
-        Options = { "Style", "Weapon", "Ability" },
-        Default = 1,
-        Callback = function(selectedName)
-            State.UnlockCategory = selectedName
-        end
-    })
-
-    UIController.UnlockToggle = unlockRight:Toggle({
-        Name = "Auto Unlock Selected",
+    UIController.ArayaToggle = unlockLeft:Toggle({
+        Name = "Auto Araya (Lost Afterimage)",
         Default = false,
         Callback = function(value)
             if UIController.IsSyncingUI then
                 return
             end
-
             if value then
-                UIController.stopOthers("unlock")
-                UnlockFarm.Start()
+                Extras.saveArayaSettings(true, 0)
+                Extras.startLoop("AutoArayaEnabled", Extras.runArayaCycle)
             else
-                UnlockFarm.Stop()
+                Extras.saveArayaSettings(false)
+                Extras.stopLoop("AutoArayaEnabled", "araya")
+                State.FarmDistanceOverride = nil
+                State.ExtraStatus = "Araya: stopped"
             end
         end
     })
 
-    unlockRight:Button({
-        Name = "Force Dialogue Step",
-        Callback = function()
-            task.spawn(function()
-                autoDialogue(nil, nil, 4)
-            end)
+    UIController.TwohToggle = unlockLeft:Toggle({
+        Name = "Auto TWOH (Dio / Earthly Proofs)",
+        Default = false,
+        Callback = function(value)
+            if UIController.IsSyncingUI then
+                return
+            end
+            if value then
+                Extras.Twoh.AcceptSeenAt = {}
+                if not UIController.Restoring then
+                    Extras.Twoh.HaltReason = nil
+                    Extras.Twoh.saveState({ Halt = "", LoseStreak = 0 })
+                end
+                Extras.startLoop("AutoTwohEnabled", Extras.Twoh.runCycle)
+            else
+                Extras.Twoh.stop(false)
+                State.ExtraStatus = "TWOH: stopped"
+            end
         end
     })
 
-    unlockRight:Header({ Text = "Unlock Overview" })
-    UIController.UnlockParagraph = unlockRight:Paragraph({
-        Header = "Selected Target",
-        Body = "waiting for data"
+    UIController.YhwachToggle = unlockLeft:Toggle({
+        Name = "Auto Yhwach (Quincy Herald)",
+        Default = false,
+        Callback = function(value)
+            if UIController.IsSyncingUI then
+                return
+            end
+            if value then
+                Extras.Yhwach.GraceSeen = {}
+                Extras.Yhwach.BusyUntil = {}
+                Extras.Yhwach.Fails = 0
+                if not UIController.Restoring then
+                    Extras.Yhwach.data().Halt = ""
+                    Extras.Yhwach.save()
+                end
+                Extras.startLoop("AutoYhwachEnabled", Extras.Yhwach.runCycle)
+            else
+                Extras.Yhwach.stop(false)
+                Extras.Yhwach.status("stopped")
+            end
+        end
+    })
+
+    UIController.TatsumakiToggle = unlockLeft:Toggle({
+        Name = "Auto Tatsumaki (Legacy Island / Meteor)",
+        Default = false,
+        Callback = function(value)
+            if UIController.IsSyncingUI then
+                return
+            end
+            if value then
+                Extras.startLoop("AutoTatsumakiEnabled", Extras.runTatsumakiCycle)
+            else
+                Extras.stopLoop("AutoTatsumakiEnabled", "tatsumaki")
+                Extras.syncToggle("TatsumakiToggle", false)
+                State.ExtraStatus = "Tatsumaki: stopped"
+            end
+        end
+    })
+
+    UIController.IchigoToggle = unlockLeft:Toggle({
+        Name = "Auto Ichigo (Zangetsu Weapon)",
+        Default = false,
+        Callback = function(value)
+            if UIController.IsSyncingUI then
+                return
+            end
+            if value then
+                Extras.startLoop("AutoIchigoEnabled", Extras.runIchigoCycle)
+            else
+                Extras.stopLoop("AutoIchigoEnabled", "ichigo")
+                Extras.syncToggle("IchigoToggle", false)
+                State.ExtraStatus = "Ichigo: stopped"
+            end
+        end
+    })
+
+    UIController.BankaiToggle = unlockLeft:Toggle({
+        Name = "Auto Ichigo Bankai (Hollow Reaper)",
+        Default = false,
+        Callback = function(value)
+            if UIController.IsSyncingUI then
+                return
+            end
+            if value then
+                Extras.Bankai.SeaCooldownUntil = nil
+                Extras.startLoop("AutoBankaiEnabled", Extras.runBankaiCycle)
+            else
+                Extras.stopBankai()
+                State.ExtraStatus = "Ichigo Bankai: stopped"
+            end
+        end
+    })
+
+    UIController.SolemnToggle = unlockLeft:Toggle({
+        Name = "Auto Solemn Lament (Griefbound Ferryman)",
+        Default = false,
+        Callback = function(value)
+            if UIController.IsSyncingUI then
+                return
+            end
+            if value then
+                Extras.Solemn.NeedOwnKill = nil
+                Extras.Solemn.Escapes = 0
+                Extras.startLoop("AutoSolemnEnabled", Extras.runSolemnCycle)
+            else
+                Extras.stopSolemn()
+                State.ExtraStatus = "Solemn Lament: stopped"
+            end
+        end
+    })
+
+    unlockRight:Header({ Text = "Special Progress" })
+    UIController.YhwachParagraph = unlockRight:Paragraph({
+        Header = "Active Power Status",
+        Body = "Idle"
     })
 
     local extrasLeft = ExtrasTab:Section({ Side = "Left" })
@@ -18731,127 +19111,11 @@ function UIController.Init()
         end
     })
 
-    extrasRight:Header({ Text = "Araya" })
-    UIController.ArayaToggle = extrasRight:Toggle({
-        Name = "Auto Araya (Lost Afterimage)",
-        Default = false,
-        Callback = function(value)
-            if UIController.IsSyncingUI then
-                return
-            end
-            if value then
-                Extras.saveArayaSettings(true, 0)
-                Extras.startLoop("AutoArayaEnabled", Extras.runArayaCycle)
-            else
-                Extras.saveArayaSettings(false)
-                Extras.stopLoop("AutoArayaEnabled", "araya")
-                State.FarmDistanceOverride = nil
-                State.ExtraStatus = "Araya: stopped"
-            end
-        end
-    })
-
-    extrasRight:Header({ Text = "The World Over Heaven" })
-    UIController.TwohToggle = extrasRight:Toggle({
-        Name = "Auto TWOH (Dio / Earthly Proofs)",
-        Default = false,
-        Callback = function(value)
-            if UIController.IsSyncingUI then
-                return
-            end
-            if value then
-                Extras.Twoh.AcceptSeenAt = {}
-                if not UIController.Restoring then
-                    Extras.Twoh.HaltReason = nil
-                    Extras.Twoh.saveState({ Halt = "", LoseStreak = 0 })
-                end
-                Extras.startLoop("AutoTwohEnabled", Extras.Twoh.runCycle)
-            else
-                Extras.Twoh.stop(false)
-                State.ExtraStatus = "TWOH: stopped"
-            end
-        end
-    })
-
-    UIController.YhwachToggle = extrasRight:Toggle({
-        Name = "Auto Yhwach (Quincy Herald)",
-        Default = false,
-        Callback = function(value)
-            if UIController.IsSyncingUI then
-                return
-            end
-            if value then
-                Extras.Yhwach.GraceSeen = {}
-                Extras.Yhwach.BusyUntil = {}
-                Extras.Yhwach.Fails = 0
-                if not UIController.Restoring then
-                    Extras.Yhwach.data().Halt = ""
-                    Extras.Yhwach.save()
-                end
-                Extras.startLoop("AutoYhwachEnabled", Extras.Yhwach.runCycle)
-            else
-                Extras.Yhwach.stop(false)
-                Extras.Yhwach.status("stopped")
-            end
-        end
-    })
-    UIController.YhwachParagraph = extrasRight:Paragraph({
-        Header = "Yhwach Status",
-        Body = "Idle"
-    })
-
-    extrasRight:Toggle({
-        Name = "Auto Over Heaven Buff (The World B)",
-        Default = false,
-        Callback = function(value)
-            State.AutoOverHeavenEnabled = value == true
-            Extras.OverHeaven.NextTryAt = 0
-            Extras.OverHeaven.Fails = 0
-        end
-    })
-
     UIController.FastModeToggle = extrasRight:Toggle({
         Name = "Fast Mode / Lag Reducer (Mobile)",
         Default = false,
         Callback = function(value)
             applyFastMode(value == true)
-        end
-    })
-
-    extrasRight:Header({ Text = "Ichigo Bankai" })
-    UIController.BankaiToggle = extrasRight:Toggle({
-        Name = "Auto Ichigo Bankai (Hollow Reaper)",
-        Default = false,
-        Callback = function(value)
-            if UIController.IsSyncingUI then
-                return
-            end
-            if value then
-                Extras.Bankai.SeaCooldownUntil = nil
-                Extras.startLoop("AutoBankaiEnabled", Extras.runBankaiCycle)
-            else
-                Extras.stopBankai()
-                State.ExtraStatus = "Ichigo Bankai: stopped"
-            end
-        end
-    })
-
-    extrasRight:Header({ Text = "Solemn Lament" })
-    UIController.SolemnToggle = extrasRight:Toggle({
-        Name = "Auto Solemn Lament (Griefbound Ferryman)",
-        Default = false,
-        Callback = function(value)
-            if UIController.IsSyncingUI then
-                return
-            end
-            if value then
-                Extras.Solemn.NeedOwnKill = nil
-                Extras.Solemn.Escapes = 0
-                Extras.startLoop("AutoSolemnEnabled", Extras.runSolemnCycle)
-            else
-                Extras.stopSolemn()
-                State.ExtraStatus = "Solemn Lament: stopped"
-            end
         end
     })
 
@@ -18935,11 +19199,14 @@ Extras.Session = {
         { "AutoFireForceTrialEnabled", "Auto Fire Force Trial (Captain Burns)" },
         { "AutoAmbushOnlyEnabled", "Auto Ambush" },
         { "AutoAmbushEnabled", "Auto Fire Fighter Company" },
+        { "AutoTatsumakiEnabled", "Auto Tatsumaki (Legacy Island / Meteor)" },
+        { "AutoIchigoEnabled", "Auto Ichigo (Zangetsu Weapon)" },
         { "AutoBankaiEnabled", "Auto Ichigo Bankai (Hollow Reaper)" },
         { "AutoSolemnEnabled", "Auto Solemn Lament (Griefbound Ferryman)" },
         { "AutoDungeonEnabled", "Auto Dungeon (enter + farm + replay)" },
         { "AutoTwohEnabled", "Auto TWOH (Dio / Earthly Proofs)" },
-        { "AutoYhwachEnabled", "Auto Yhwach (Quincy Herald)" }
+        { "AutoYhwachEnabled", "Auto Yhwach (Quincy Herald)" },
+        { "AutoOverHeavenEnabled", "Auto Over Heaven Buff (The World B)" }
     }
 }
 
