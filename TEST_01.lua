@@ -63,7 +63,9 @@ local State = {
     SelectedStyle = "Current",
     SelectedWeapon = "Current",
     SelectedAbility = "Current",
-    MultiCastSkills = false,
+    YhwachSummonChoice = "TheBalance",
+    YhwachSummonLabel = "The Balance",
+    MultiCastSkills = true,
     FarmDistance = 25,
     FarmPosition = "Below",
     TweenSpeed = 60,
@@ -325,6 +327,20 @@ local combatTypeToItemType = {
 }
 
 local skillKeyOrder = { "Z", "X", "C", "V", "F", "B" }
+local YhwachSummonOptions = {
+    "The Balance",
+    "The Fear",
+    "The Visionary",
+    "The Explode",
+    "The Deathdealing"
+}
+local YhwachSummonMap = {
+    ["The Balance"] = "TheBalance",
+    ["The Fear"] = "TheFear",
+    ["The Visionary"] = "TheVisionary",
+    ["The Explode"] = "TheExplode",
+    ["The Deathdealing"] = "TheDeathdealing"
+}
 local prestigeIslandName = "Legacy Island"
 local prestigeNPCName = "Prestige Overseer"
 local pickupFolderNames = { "Effects", "Items", "Chests", "HollowEchoFragments" }
@@ -2018,13 +2034,19 @@ local function equipInventoryItem(itemName)
     local identityValue = item:FindFirstChild("Identity")
     local identity = (identityValue and identityValue.Value) or itemName
 
+    invokeInput("Equip", identity)
+    task.wait(0.2)
+    if isItemEquipped(itemName) then
+        return true
+    end
+
     if equipRemote then
         local itemInfo = itemData[itemName]
         if itemInfo and itemInfo.Type then
             pcall(function()
                 equipRemote:FireServer(itemInfo.Type, itemName, identity)
             end)
-            task.wait(0.35)
+            task.wait(0.25)
             if isItemEquipped(itemName) then
                 return true
             end
@@ -2033,7 +2055,7 @@ local function equipInventoryItem(itemName)
         pcall(function()
             equipRemote:FireServer(identity)
         end)
-        task.wait(0.35)
+        task.wait(0.25)
         if isItemEquipped(itemName) then
             return true
         end
@@ -2041,14 +2063,11 @@ local function equipInventoryItem(itemName)
         pcall(function()
             equipRemote:FireServer(itemName)
         end)
-        task.wait(0.35)
+        task.wait(0.25)
         if isItemEquipped(itemName) then
             return true
         end
     end
-
-    invokeInput("Equip", identity)
-    task.wait(0.35)
 
     return isItemEquipped(itemName)
 end
@@ -3493,15 +3512,28 @@ function Combat.isOnCooldown(toolInstance, activeTool, skillKey, character)
         end
     end
 
-    local markerName = tostring(toolInstance:GetAttribute("Type") or "Weapon") .. "-" .. cooldownKey
+    local toolType = toolInstance:GetAttribute("Type") or (activeTool and activeTool.Type)
+    if not toolType then
+        local info = itemData and itemData[toolInstance.Name]
+        toolType = info and info.Type or State.FarmCombatType or "Weapon"
+    end
+    local markerName = tostring(toolType) .. "-" .. cooldownKey
     if localPlayer:FindFirstChild(markerName) or character:FindFirstChild(markerName) then
         return true
+    end
+    if not toolInstance:GetAttribute("Type") then
+        for _, altType in ipairs({ "Style", "Ability", "Weapon" }) do
+            local altMarker = altType .. "-" .. cooldownKey
+            if localPlayer:FindFirstChild(altMarker) or character:FindFirstChild(altMarker) then
+                return true
+            end
+        end
     end
 
     local castingSince = State.SkillCasting[skillKey]
     if castingSince then
         local castingAge = os.clock() - castingSince
-        if castingAge < Combat.CastingGrace or (castingAge < 8 and character:FindFirstChild("Acting")) then
+        if castingAge < Combat.CastingGrace or (castingAge < 1.5 and character:FindFirstChild("Acting")) then
             return true
         end
         State.SkillCasting[skillKey] = nil
@@ -3598,6 +3630,19 @@ function Combat.fireSkill(toolInstance, activeTool, skillKey, enemyRoot)
 
         task.delay(0.2, function()
             pcall(activeTool.Move, skillKey, "Ended")
+        end)
+        return
+    end
+
+    if toolInstance.Name == "Yhwach" and skillKey == "F" then
+        local summonChoice = State.YhwachSummonChoice or "TheBalance"
+        pcall(function()
+            inputEvent:FireServer("Tool", toolInstance, "F", Combat.aimPoint(enemyRoot))
+        end)
+        task.delay(0.12, function()
+            pcall(function()
+                inputEvent:FireServer("Tool", toolInstance, "F", nil, summonChoice)
+            end)
         end)
         return
     end
@@ -3719,7 +3764,7 @@ function Combat.castSkills(toolInstance, character, enemyRoot)
             and now >= (Combat.PendingUntil[pendingKey] or 0)
             and not Combat.isOnCooldown(toolInstance, activeTool, skillKey, character) then
             Combat.PendingUntil[pendingKey] = now + Combat.PendingSeconds
-            Combat.NextCastAt = now + 0.25
+            Combat.NextCastAt = now + 0.15
             Combat.fireSkill(toolInstance, activeTool, skillKey, enemyRoot)
             return true
         end
@@ -3769,14 +3814,14 @@ function Combat.allSkillsOnCooldown(toolInstance, character)
 end
 
 function Combat.hasReadySkill(toolInstance, character)
-    local serverNow = workspaceService:GetServerTimeNow()
-    local typeName = tostring(toolInstance:GetAttribute("Type") or "Weapon")
+    local activeTool = Combat.getActiveTool(toolInstance)
+    local availableKeys = Combat.getSkillKeys(activeTool)
     for _, skillKey in ipairs(skillKeyOrder) do
-        if Combat.isSkillWanted(toolInstance, skillKey, character) and not Combat.SpecialKeys[toolInstance.Name .. "|" .. skillKey] then
-            local markerName = typeName .. "-" .. skillKey
-            local readyAt = State.SkillCooldowns[toolInstance.Name .. "|" .. skillKey]
-            local cooling = localPlayer:FindFirstChild(markerName) or character:FindFirstChild(markerName) or (readyAt and serverNow < readyAt - 0.05)
-            if not cooling then
+        local pendingKey = toolInstance.Name .. "|" .. skillKey
+        if Combat.isSkillWanted(toolInstance, skillKey, character)
+            and (availableKeys == nil or availableKeys[skillKey])
+            and not Combat.SpecialKeys[pendingKey] then
+            if not Combat.isOnCooldown(toolInstance, activeTool, skillKey, character) then
                 return true
             end
         end
@@ -3916,11 +3961,14 @@ function Combat.tick()
     end
 
     if State.AutoUseSkills then
-        local canCast = not acting or (State.MultiCastSkills and not Combat.QueuedWhileActing and (now - Combat.ActingSince) >= 0.2)
+        local canCast = not acting or State.MultiCastSkills or (now - (Combat.ActingSince or now)) >= 0.15
         if canCast and Combat.castSkills(toolInstance, character, enemyRoot) then
             if acting then
                 Combat.QueuedWhileActing = true
             end
+            return
+        end
+        if Combat.hasReadySkill(toolInstance, character) or Combat.isAwakenReady(toolInstance, character) then
             return
         end
     end
@@ -3929,7 +3977,7 @@ function Combat.tick()
         return
     end
 
-    Combat.NextAttackAt = now + 0.15
+    Combat.NextAttackAt = now + 0.25
     pcall(function()
         inputEvent:FireServer("Tool", toolInstance, "M1")
     end)
@@ -8546,6 +8594,9 @@ function Extras.Twoh.shouldBossTimeStop(enemyModel)
     if not twoh or twoh.TimeStoppingBoss or twoh.SealPrompt ~= nil or twoh.EnteringRealm then
         return false
     end
+    if workspaceService:GetAttribute("Dungeon") ~= "Realm Beyond Heaven" then
+        return false
+    end
     if not enemyModel then
         return false
     end
@@ -12009,6 +12060,33 @@ function Extras.getCoffinPrompt(coffin)
         end
     end
     return nil
+end
+
+function Extras.watchYhwachRoster()
+    local function checkGui(gui)
+        if gui and gui.Name == "YhwachAushwalen" then
+            local summonId = State.YhwachSummonChoice or "TheBalance"
+            local char = localPlayer.Character
+            local tool = (char and char:FindFirstChild("Yhwach")) or (localPlayer.Backpack and localPlayer.Backpack:FindFirstChild("Yhwach"))
+            if tool then
+                pcall(function()
+                    inputEvent:FireServer("Tool", tool, "F", nil, summonId)
+                end)
+            end
+            task.delay(0.05, function()
+                pcall(function()
+                    gui:Destroy()
+                end)
+            end)
+        end
+    end
+    local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui") or localPlayer:WaitForChild("PlayerGui", 5)
+    if playerGui then
+        for _, g in ipairs(playerGui:GetChildren()) do
+            checkGui(g)
+        end
+        playerGui.ChildAdded:Connect(checkGui)
+    end
 end
 
 function Extras.watchCoffins()
@@ -18525,6 +18603,22 @@ function UIController.Init()
         end
     })
 
+    UIController.YhwachSummonDropdown = leftSection:Dropdown({
+        Name = "Yhwach Skill F Summon",
+        Options = YhwachSummonOptions,
+        Default = State.YhwachSummonLabel or "The Balance",
+        Callback = function(value)
+            local choice = tostring(value or "")
+            State.YhwachSummonLabel = choice
+            State.YhwachSummonChoice = YhwachSummonMap[choice] or "TheBalance"
+            if UIController.YhwachSummonDropdownBoss and UIController.YhwachSummonDropdownBoss ~= UIController.YhwachSummonDropdown then
+                pcall(function()
+                    UIController.YhwachSummonDropdownBoss:UpdateSelection(choice)
+                end)
+            end
+        end
+    })
+
     leftSection:Dropdown({
         Name = "Farm Position",
         Options = { "Above", "Behind", "Below" },
@@ -19130,6 +19224,22 @@ function UIController.Init()
         end
     })
 
+    UIController.YhwachSummonDropdownBoss = unlockLeft:Dropdown({
+        Name = "Yhwach Skill F Summon",
+        Options = YhwachSummonOptions,
+        Default = State.YhwachSummonLabel or "The Balance",
+        Callback = function(value)
+            local choice = tostring(value or "")
+            State.YhwachSummonLabel = choice
+            State.YhwachSummonChoice = YhwachSummonMap[choice] or "TheBalance"
+            if UIController.YhwachSummonDropdown and UIController.YhwachSummonDropdown ~= UIController.YhwachSummonDropdownBoss then
+                pcall(function()
+                    UIController.YhwachSummonDropdown:UpdateSelection(choice)
+                end)
+            end
+        end
+    })
+
     UIController.TatsumakiToggle = unlockLeft:Toggle({
         Name = "Auto Tatsumaki (Legacy Island / Meteor)",
         Default = false,
@@ -19559,7 +19669,9 @@ function Extras.saveSession()
         PickupTargets = selectionList(State.PickupTargets),
         SelectedStyle = State.SelectedStyle,
         SelectedWeapon = State.SelectedWeapon,
-        SelectedAbility = State.SelectedAbility
+        SelectedAbility = State.SelectedAbility,
+        YhwachSummonChoice = State.YhwachSummonChoice,
+        YhwachSummonLabel = State.YhwachSummonLabel
     }
     local encoded = httpService:JSONEncode(payload)
     if encoded == session.LastEncoded and os.clock() - (session.LastWriteAt or 0) < 600 then
@@ -19643,6 +19755,20 @@ function Extras.resumeSession(phase)
         if UIController.SelectedAbilityDropdown then
             pcall(function()
                 UIController.SelectedAbilityDropdown:UpdateSelection(saved.SelectedAbility)
+            end)
+        end
+    end
+    if typeof(saved.YhwachSummonChoice) == "string" then
+        State.YhwachSummonChoice = saved.YhwachSummonChoice
+        State.YhwachSummonLabel = saved.YhwachSummonLabel or "The Balance"
+        if UIController.YhwachSummonDropdown then
+            pcall(function()
+                UIController.YhwachSummonDropdown:UpdateSelection(State.YhwachSummonLabel)
+            end)
+        end
+        if UIController.YhwachSummonDropdownBoss then
+            pcall(function()
+                UIController.YhwachSummonDropdownBoss:UpdateSelection(State.YhwachSummonLabel)
             end)
         end
     end
@@ -19879,6 +20005,8 @@ function Extras.OverHeaven.cast()
         overHeaven.Fails = overHeaven.Fails + 1
         overHeaven.NextTryAt = os.clock() + math.min(20 * overHeaven.Fails, 120)
     end
+    task.wait(0.2)
+    pcall(Extras.enforcePreferredLoadout)
     if previousTool and previousTool ~= styleTool and previousTool.Parent and not isFarmActive() then
         pcall(function()
             playerHumanoid:EquipTool(previousTool)
@@ -20112,6 +20240,7 @@ Extras.connectAntiAfk()
 Extras.OverHeaven.start()
 Extras.connectItemIndicators()
 Extras.watchCoffins()
+Extras.watchYhwachRoster()
 Extras.resumeArayaAfterTeleport()
 UIController.Restoring = true
 Extras.resumeSession("values")
