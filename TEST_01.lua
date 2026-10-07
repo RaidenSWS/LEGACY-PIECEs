@@ -5968,11 +5968,16 @@ function Extras.startFastFishing()
     fishing.AimPoint = nil
     fishing.StartedAt = os.clock()
     State.FishStatus = "starting"
+    State.AutoWhaleEnabled = true
     Extras.startLoop("AutoFishEnabled", Extras.runFishingCycle)
+    Extras.startLoop("AutoWhaleEnabled", Extras.runWhaleCycle)
 end
 
 function Extras.stopFishing()
     Extras.stopLoop("AutoFishEnabled")
+    Extras.stopLoop("AutoWhaleEnabled", "whale")
+    Extras.endWhaleEvent()
+    State.AutoWhaleEnabled = false
     Extras.releaseFishingSpot()
     local fishing = Extras.Fishing
     local remote = Extras.getFishingRemote()
@@ -5987,6 +5992,7 @@ function Extras.stopFishing()
     end
     Extras.muteGameFishing(false)
     Extras.resetFishingRound()
+    State.FishStatus = "stopped"
 end
 
 Extras.DeepsharkName = "Ancient Deepshark"
@@ -18611,11 +18617,6 @@ function UIController.Init()
             local choice = tostring(value or "")
             State.YhwachSummonLabel = choice
             State.YhwachSummonChoice = YhwachSummonMap[choice] or "TheBalance"
-            if UIController.YhwachSummonDropdownBoss and UIController.YhwachSummonDropdownBoss ~= UIController.YhwachSummonDropdown then
-                pcall(function()
-                    UIController.YhwachSummonDropdownBoss:UpdateSelection(choice)
-                end)
-            end
         end
     })
 
@@ -19036,6 +19037,27 @@ function UIController.Init()
             end
         })
 
+        bossLeft:Header({ Text = "Ancient Deepshark" })
+        UIController.DeepsharkToggle = bossLeft:Toggle({
+            Name = "Auto Ancient Deepshark (uses Abyssal Bait)",
+            Default = false,
+            Callback = function(value)
+                if UIController.IsSyncingUI then
+                    return
+                end
+                if value then
+                    Extras.DeepsharkKillsAtStart = Extras.getDeepsharkKillStat()
+                    Extras.DeepSeaIndex = 1
+                    Extras.startLoop("AutoDeepsharkEnabled", Extras.runDeepsharkCycle)
+                else
+                    Extras.stopLoop("AutoDeepsharkEnabled", "deepshark")
+                    Extras.endDeepsharkFishing()
+                    Extras.releaseDeepsharkPriority()
+                    State.ExtraStatus = "Deepshark: stopped"
+                end
+            end
+        })
+
         bossLeft:Header({ Text = "Altar Summon Bosses" })
         UIController.AltarDropdown = bossLeft:Dropdown({
             Name = "Altar Bosses (Multi-Select)",
@@ -19224,22 +19246,6 @@ function UIController.Init()
         end
     })
 
-    UIController.YhwachSummonDropdownBoss = unlockLeft:Dropdown({
-        Name = "Yhwach Skill F Summon",
-        Options = YhwachSummonOptions,
-        Default = State.YhwachSummonLabel or "The Balance",
-        Callback = function(value)
-            local choice = tostring(value or "")
-            State.YhwachSummonLabel = choice
-            State.YhwachSummonChoice = YhwachSummonMap[choice] or "TheBalance"
-            if UIController.YhwachSummonDropdown and UIController.YhwachSummonDropdown ~= UIController.YhwachSummonDropdownBoss then
-                pcall(function()
-                    UIController.YhwachSummonDropdown:UpdateSelection(choice)
-                end)
-            end
-        end
-    })
-
     UIController.TatsumakiToggle = unlockLeft:Toggle({
         Name = "Auto Tatsumaki (Legacy Island / Meteor)",
         Default = false,
@@ -19386,49 +19392,9 @@ function UIController.Init()
         Extras.saveDungeonSettings()
     end
 
-    extrasLeft:Header({ Text = "Trait Reroll" })
-    extrasLeft:Dropdown({
-        Name = "Stop On Trait (Multi-Select)",
-        Search = true,
-        Multi = true,
-        Required = false,
-        Options = Extras.getTraitOptions(),
-        Default = {},
-        Callback = function(value)
-            if typeof(value) == "string" then
-                local toggledTrait = Extras.TraitByLabel[value] or value
-                State.TraitTargets[toggledTrait] = (not State.TraitTargets[toggledTrait]) or nil
-                return
-            end
-            local selectedLabels = UIController.parseMultiSelection(value)
-            local newTargets = {}
-            for label in pairs(selectedLabels) do
-                newTargets[Extras.TraitByLabel[label] or label] = true
-            end
-            State.TraitTargets = newTargets
-        end
-    })
-
-    UIController.TraitToggle = extrasLeft:Toggle({
-        Name = "Auto Reroll Trait",
-        Default = false,
-        Callback = function(value)
-            if UIController.IsSyncingUI then
-                return
-            end
-            if value then
-                Extras.TraitRolls = 0
-                Extras.startLoop("AutoTraitEnabled", Extras.runTraitCycle)
-            else
-                Extras.stopLoop("AutoTraitEnabled")
-                State.ExtraStatus = "Trait: stopped"
-            end
-        end
-    })
-
     extrasLeft:Header({ Text = "Fishing" })
     UIController.FishToggle = extrasLeft:Toggle({
-        Name = "Auto Fishing (Fast)",
+        Name = "Auto Fish",
         Default = false,
         Callback = function(value)
             if UIController.IsSyncingUI then
@@ -19438,41 +19404,6 @@ function UIController.Init()
                 Extras.startFastFishing()
             else
                 Extras.stopFishing()
-                State.FishStatus = "stopped"
-            end
-        end
-    })
-
-    extrasLeft:Toggle({
-        Name = "Fish At Whale Event (with Auto Fishing)",
-        Default = false,
-        Callback = function(value)
-            if value then
-                Extras.startLoop("AutoWhaleEnabled", Extras.runWhaleCycle)
-            else
-                Extras.stopLoop("AutoWhaleEnabled", "whale")
-                Extras.endWhaleEvent()
-                State.ExtraStatus = "Whale: stopped"
-            end
-        end
-    })
-
-    UIController.DeepsharkToggle = extrasLeft:Toggle({
-        Name = "Auto Ancient Deepshark (uses Abyssal Bait)",
-        Default = false,
-        Callback = function(value)
-            if UIController.IsSyncingUI then
-                return
-            end
-            if value then
-                Extras.DeepsharkKillsAtStart = Extras.getDeepsharkKillStat()
-                Extras.DeepSeaIndex = 1
-                Extras.startLoop("AutoDeepsharkEnabled", Extras.runDeepsharkCycle)
-            else
-                Extras.stopLoop("AutoDeepsharkEnabled", "deepshark")
-                Extras.endDeepsharkFishing()
-                Extras.releaseDeepsharkPriority()
-                State.ExtraStatus = "Deepshark: stopped"
             end
         end
     })
@@ -19622,9 +19553,8 @@ Extras.Session = {
         { "FarmLevelEnabled", "Auto Farm Level" },
         { "BossFarmEnabled", "Auto Farm Selected Bosses" },
         { "PrestigeEnabled", "Auto Prestige" },
-        { "AutoFishEnabled", "Auto Fishing (Fast)" },
+        { "AutoFishEnabled", "Auto Fish" },
         { "AutoDeepsharkEnabled", "Auto Ancient Deepshark (uses Abyssal Bait)" },
-        { "AutoWhaleEnabled", "Fish At Whale Event (with Auto Fishing)" },
         { "AutoCoffinEnabled", "Auto Coffin Page (Mysterious Stranger)" },
         { "AutoFireForceTrialEnabled", "Auto Fire Force Trial (Captain Burns)" },
         { "AutoAmbushOnlyEnabled", "Auto Ambush" },
@@ -19764,11 +19694,6 @@ function Extras.resumeSession(phase)
         if UIController.YhwachSummonDropdown then
             pcall(function()
                 UIController.YhwachSummonDropdown:UpdateSelection(State.YhwachSummonLabel)
-            end)
-        end
-        if UIController.YhwachSummonDropdownBoss then
-            pcall(function()
-                UIController.YhwachSummonDropdownBoss:UpdateSelection(State.YhwachSummonLabel)
             end)
         end
     end
