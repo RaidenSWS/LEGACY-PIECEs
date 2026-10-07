@@ -344,8 +344,7 @@ local bossCatalogGroups = {
     { Label = "Summon", Names = { "One-Eyed Owl", "Cid Kagenou", "The Red Mist", "Demon Infernal", "Dio" } },
     { Label = "Whisperer", Names = { "Sosuke Aizen", "Ichigo Kurosaki", "Ichigo Kurosaki Bankai", "Satoru Gojo", "Ryomen Sukuna", "Garou", "Blast", "Flashy Flash", "Ken Kaneki", "Akaza", "Chihora", "Solemn Lament", "Ichigo True Bankai", "Chad", "Undyne", "Fishman Captain" } },
     { Label = "Quincy", Names = { "As Nodt", "Askin Nakk Le Vaar", "Bambietta Basterbine", "Gremmy Thoumeaux", "Jugram Haschwalth" } },
-    { Label = "Field/Endgame", Names = { "The Dihui Star, Araya", "Rien", "Dio Heaven Ascension" } },
-    { Label = "World/Raid", Names = { "Yhwach", "Ancient Deepshark", "World Whale Event" } }
+    { Label = "World/Raid", Names = { "Yhwach (Global Boss)" } }
 }
 
 local prestigeKillBossMap = {
@@ -364,7 +363,17 @@ local prestigeKillBossMap = {
     BossKills = "Sosuke Aizen"
 }
 
-local knownBossNames = {}
+local knownBossNames = {
+    ["Yhwach"] = true,
+    ["Yhwach Not Dungeon"] = true,
+    ["Yhwach (Global Boss)"] = true,
+    ["Yhwach (Summoned)"] = true,
+    ["The Dihui Star, Araya"] = true,
+    ["Rien"] = true,
+    ["Dio Heaven Ascension"] = true,
+    ["Ancient Deepshark"] = true,
+    ["World Whale Event"] = true
+}
 for _, group in ipairs(bossCatalogGroups) do
     for _, bossName in ipairs(group.Names) do
         knownBossNames[bossName] = true
@@ -4651,19 +4660,13 @@ function AutoPickup.Stop()
     end
 end
 
-AutoCode.CodeList = {
-    "HELLUPDATE!!",
+AutoCode.FallbackList = {
+    "UPDATE2.1!!",
+    "UPD2.05!!",
+    "SORRYFORBUGS18!!",
     "SORRYFORDELAY8!!",
-    "SORRYFORDELAY7!!",
-    "UPD2.0!!",
-    "thanksfor17kccu!!",
-    "thanksfor16kccu!!",
-    "thanksfor15kccu!!",
-    "thanksfor14kccu!!",
-    "thanksfor13kccu!!",
-    "thanksfor12kccu!!",
-    "thanksfor11kccu!!",
-    "thanksfor10kccu!!"
+    "THANKSFOR17KCCU!!",
+    "THANKSFOR16KCCU!!"
 }
 AutoCode.Thread = nil
 
@@ -4673,15 +4676,12 @@ function AutoCode.getRedeemedCodes()
     if not codesValue or codesValue.Value == "" then
         return {}
     end
-
     local success, decoded = pcall(function()
         return httpService:JSONDecode(codesValue.Value)
     end)
-
     if success and typeof(decoded) == "table" then
         return decoded
     end
-
     return {}
 end
 
@@ -4689,7 +4689,6 @@ function AutoCode.isCodeRedeemed(code)
     if not code then
         return true
     end
-
     return AutoCode.getRedeemedCodes()[string.lower(code)] == true
 end
 
@@ -4697,23 +4696,123 @@ function AutoCode.redeemCode(code)
     if AutoCode.isCodeRedeemed(code) then
         return "Already Used"
     end
-
     local success, result = invokeInput("Code", code)
-
     if success then
         return result
     end
-
     return "Error"
+end
+
+function AutoCode.getGuidebookCodes()
+    local codes = {}
+    local seen = {}
+    pcall(function()
+        local providers = require(replicatedStorage:WaitForChild("Modules"):WaitForChild("GUI"):WaitForChild("GuidebookProviders"))
+        if providers and typeof(providers.CatalogRows) == "function" and getupvalues then
+            local uvs = getupvalues(providers.CatalogRows)
+            for _, fn in pairs(uvs) do
+                if typeof(fn) == "function" then
+                    local consts = (getconstants and getconstants(fn)) or {}
+                    local isCodeProvider = false
+                    for _, c in pairs(consts) do
+                        if c == "CodeResults" or c == "REDEEMED" then
+                            isCodeProvider = true
+                            break
+                        end
+                    end
+                    if isCodeProvider then
+                        local rows = fn()
+                        if typeof(rows) == "table" then
+                            for _, item in ipairs(rows) do
+                                local codeName = item.Title or item.Key or item.Name
+                                if typeof(codeName) == "string" and #codeName > 0 and not seen[string.lower(codeName)] then
+                                    seen[string.lower(codeName)] = true
+                                    table.insert(codes, {
+                                        Code = codeName,
+                                        Redeemed = item.Has == true or item.Status == "REDEEMED" or AutoCode.isCodeRedeemed(codeName)
+                                    })
+                                end
+                            end
+                        end
+                        if #codes > 0 then
+                            return
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    if #codes == 0 then
+        pcall(function()
+            local providers = require(replicatedStorage:WaitForChild("Modules"):WaitForChild("GUI"):WaitForChild("GuidebookProviders"))
+            if providers and getupvalues then
+                local uvs = getupvalues(providers.CatalogRows)
+                for _, fn in pairs(uvs) do
+                    if typeof(fn) == "function" then
+                        local fnUvs = getupvalues(fn)
+                        for _, uv in pairs(fnUvs) do
+                            if typeof(uv) == "table" and uv.Codes and typeof(uv.Codes) == "table" then
+                                for rawCode, info in pairs(uv.Codes) do
+                                    local codeStr = tostring(rawCode)
+                                    if not seen[string.lower(codeStr)] then
+                                        local isCreator = typeof(info) == "table" and info.ContentCreatorOnly == true
+                                        if not isCreator then
+                                            seen[string.lower(codeStr)] = true
+                                            table.insert(codes, {
+                                                Code = codeStr,
+                                                Redeemed = AutoCode.isCodeRedeemed(codeStr)
+                                            })
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+    end
+    if #codes == 0 then
+        pcall(function()
+            local pg = localPlayer:FindFirstChild("PlayerGui")
+            local gbGui = pg and pg:FindFirstChild("Guidebook")
+            if gbGui then
+                for _, desc in ipairs(gbGui:GetDescendants()) do
+                    if desc:IsA("TextLabel") and desc.Name == "Label" and desc.Parent and desc.Parent.Name == "CatalogRow" then
+                        local txt = desc.Text
+                        if typeof(txt) == "string" and #txt > 0 and not seen[string.lower(txt)] then
+                            seen[string.lower(txt)] = true
+                            table.insert(codes, {
+                                Code = txt,
+                                Redeemed = AutoCode.isCodeRedeemed(txt)
+                            })
+                        end
+                    end
+                end
+            end
+        end)
+    end
+    for _, fallbackCode in ipairs(AutoCode.FallbackList or {}) do
+        if not seen[string.lower(fallbackCode)] then
+            seen[string.lower(fallbackCode)] = true
+            table.insert(codes, {
+                Code = fallbackCode,
+                Redeemed = AutoCode.isCodeRedeemed(fallbackCode)
+            })
+        end
+    end
+    return codes
 end
 
 function AutoCode.redeemAll()
     local unredeemedCount = 0
-    for _, code in ipairs(AutoCode.CodeList) do
-        if not AutoCode.isCodeRedeemed(code) then
+    local entries = AutoCode.getGuidebookCodes()
+    for _, entry in ipairs(entries) do
+        local code = entry.Code
+        if not entry.Redeemed and not AutoCode.isCodeRedeemed(code) then
             unredeemedCount = unredeemedCount + 1
             AutoCode.redeemCode(code)
-            task.wait(0.5)
+            task.wait(0.6)
         end
     end
     return unredeemedCount
@@ -4723,13 +4822,11 @@ function AutoCode.Start()
     if State.AutoCodeEnabled then
         return
     end
-
     State.AutoCodeEnabled = true
-
     AutoCode.Thread = task.spawn(function()
         while State.AutoCodeEnabled do
             AutoCode.redeemAll()
-            task.wait(30)
+            task.wait(45)
         end
     end)
 end
@@ -8832,7 +8929,7 @@ function Extras.Yhwach.status(message)
 end
 
 function Extras.Yhwach.isActive()
-    return State.AutoYhwachEnabled == true
+    return State.AutoYhwachEnabled == true or (State.BossFarmEnabled and (State.BossSelection["Yhwach (Summoned)"] == true or State.BossSelection["Yhwach Not Dungeon"] == true))
 end
 
 function Extras.Yhwach.data()
@@ -9533,7 +9630,14 @@ end
 
 function Extras.Yhwach.fightActive()
     local yh = Extras.Yhwach
-    if not (yh.isActive() and Extras.PriorityRequest == "yhwach" and movementOwner == "yhwach") then
+    if not yh.isActive() then
+        return false
+    end
+    if movementOwner == "boss" and State.BossFarmEnabled then
+        movementOwnerSince = os.clock()
+        return true
+    end
+    if not (Extras.PriorityRequest == "yhwach" and movementOwner == "yhwach") then
         return false
     end
     movementOwnerSince = os.clock()
@@ -15661,6 +15765,13 @@ function BossFarm.getSummonEntry(bossName)
 end
 
 function BossFarm.resolveBossName(mobName)
+    if mobName == "Yhwach (Global Boss)" then
+        return "Yhwach"
+    end
+    if mobName == "Yhwach (Summoned)" or mobName == "Yhwach Not Dungeon" then
+        return "Yhwach Not Dungeon"
+    end
+
     local catalogItem = BossFarm.getSummonEntry(mobName)
     if catalogItem then
         return catalogItem.Name
@@ -15758,6 +15869,15 @@ end
 function BossFarm.isBossAlive(bossName)
     local rootPart = getRoot()
     local origin = rootPart and rootPart.Position or Vector3.zero
+    if bossName == "Yhwach (Global Boss)" or bossName == "Yhwach" then
+        return getTargetEnemy("Yhwach", origin, true) ~= nil
+    end
+    if bossName == "Yhwach (Summoned)" or bossName == "Yhwach Not Dungeon" then
+        if Extras.Yhwach and Extras.Yhwach.findKing() then
+            return true
+        end
+        return getTargetEnemy("Yhwach Not Dungeon", origin, true) ~= nil
+    end
     return getTargetEnemy(bossName, origin, true) ~= nil
 end
 
@@ -15943,7 +16063,8 @@ function BossFarm.findTimedBoss()
     local origin = rootPart and rootPart.Position or Vector3.zero
 
     for _, bossName in ipairs(timedBossNames) do
-        if State.BossSelection[bossName] then
+        local isSelected = State.BossSelection[bossName] or (bossName == "Yhwach" and State.BossSelection["Yhwach (Global Boss)"])
+        if isSelected then
             if bossName == "World Whale Event" then
                 if whaleFolder then
                     for _, model in ipairs(whaleFolder:GetChildren()) do
@@ -15961,7 +16082,8 @@ function BossFarm.findTimedBoss()
 
     if lastBossAlert and (os.clock() - lastBossAlert.Time) < 180 and lastBossAlert.Name then
         for _, bossName in ipairs(timedBossNames) do
-            if State.BossSelection[bossName] and string.find(normalizeName(lastBossAlert.Name), normalizeName(bossName), 1, true) then
+            local isSelected = State.BossSelection[bossName] or (bossName == "Yhwach" and State.BossSelection["Yhwach (Global Boss)"])
+            if isSelected and string.find(normalizeName(lastBossAlert.Name), normalizeName(bossName), 1, true) then
                 return bossName, lastBossAlert.Position
             end
         end
@@ -16122,6 +16244,73 @@ function BossFarm.summonAtStatue(catalogItem, stopCondition)
     quincy.KillsTarget = math.max(quincy.KillsPerSummon, quincy.Kills + 5)
     setFarmStatus(string.format("%s summon rejected | %s %d/%d", bossName, soldierName, quincy.Kills, quincy.KillsTarget))
     return false
+end
+
+function BossFarm.stepSummonedYhwach(stopCondition)
+    local yh = Extras.Yhwach
+    if not yh then
+        return false
+    end
+    local king = yh.findKing()
+    if not king then
+        local rootPart = getRoot()
+        local origin = rootPart and rootPart.Position or Vector3.zero
+        king = getTargetEnemy("Yhwach Not Dungeon", origin, true)
+    end
+    if king then
+        setFarmStatus("Engaging Quincy King (Yhwach Not Dungeon)")
+        yh.fightKing(king)
+        return true
+    end
+    if not State.AutoSummonBoss then
+        setFarmStatus("Waiting for Yhwach (Summoned) to spawn (auto summon off)")
+        task.wait(2)
+        return false
+    end
+    local blockReason = BossFarm.getQuincyBlockReason()
+    if blockReason then
+        setFarmStatus("Yhwach (Summoned) | " .. blockReason)
+        task.wait(2)
+        return false
+    end
+    yh.syncBank()
+    yh.reconcileSummoned()
+    local data = yh.data()
+    local nextStatue = nil
+    for _, name in ipairs(yh.Route) do
+        local aliveBoss = yh.findBoss(name)
+        if aliveBoss then
+            nextStatue = name
+            break
+        end
+        if not data.SetKills[name] and not nextStatue then
+            nextStatue = name
+        end
+    end
+    if not nextStatue then
+        if yh.setCount() >= #yh.Route then
+            setFarmStatus("All 5 statues killed | waiting for Quincy King to spawn")
+            local deadline = os.clock() + 15
+            while os.clock() < deadline and (stopCondition == nil or stopCondition()) do
+                king = yh.findKing()
+                if king then
+                    setFarmStatus("Engaging Quincy King")
+                    yh.fightKing(king)
+                    return true
+                end
+                task.wait(0.5)
+            end
+            data.SetKills = {}
+            yh.save()
+        else
+            data.SetKills = {}
+            yh.save()
+        end
+        return false
+    end
+    setFarmStatus("Yhwach Summon Set (" .. tostring(yh.setCount()) .. "/5) | " .. nextStatue)
+    yh.fightStatue(nextStatue)
+    return true
 end
 
 function BossFarm.summonBoss(catalogItem)
@@ -16548,7 +16737,15 @@ function BossFarm.runCycle()
             return
         end
 
-        if BossFarm.isBossAlive(bossName) then
+        if bossName == "Yhwach (Summoned)" or bossName == "Yhwach Not Dungeon" then
+            local king = Extras.Yhwach and Extras.Yhwach.findKing()
+            if king then
+                BossFarm.stepSummonedYhwach(function()
+                    return State.BossFarmEnabled
+                end)
+                return
+            end
+        elseif BossFarm.isBossAlive(bossName) then
             BossFarm.engageBoss(bossName, nil)
             return
         end
@@ -16560,6 +16757,14 @@ function BossFarm.runCycle()
         return
     end
 
+    if State.BossSelection["Yhwach (Summoned)"] or State.BossSelection["Yhwach Not Dungeon"] then
+        if BossFarm.stepSummonedYhwach(function()
+            return State.BossFarmEnabled
+        end) then
+            return
+        end
+    end
+
     local now = os.clock()
     local anySummonable = false
 
@@ -16568,18 +16773,20 @@ function BossFarm.runCycle()
             return
         end
 
-        local catalogItem = BossFarm.getSummonEntry(bossName)
-        local cooldownUntil = bossSummonCooldown[bossName] or 0
+        if bossName ~= "Yhwach (Summoned)" and bossName ~= "Yhwach Not Dungeon" and bossName ~= "Yhwach (Global Boss)" then
+            local catalogItem = BossFarm.getSummonEntry(bossName)
+            local cooldownUntil = bossSummonCooldown[bossName] or 0
 
-        if catalogItem and now >= cooldownUntil then
-            anySummonable = true
-            BossFarm.prepareAndKill(catalogItem, function()
-                return State.BossFarmEnabled
-            end, "boss")
-            return
-        elseif catalogItem then
-            State.BossStatus = bossName .. " on cooldown " .. tostring(math.ceil(cooldownUntil - now)) .. "s"
-            task.wait(0.2)
+            if catalogItem and now >= cooldownUntil then
+                anySummonable = true
+                BossFarm.prepareAndKill(catalogItem, function()
+                    return State.BossFarmEnabled
+                end, "boss")
+                return
+            elseif catalogItem then
+                State.BossStatus = bossName .. " on cooldown " .. tostring(math.ceil(cooldownUntil - now)) .. "s"
+                task.wait(0.2)
+            end
         end
     end
 
@@ -17105,14 +17312,29 @@ function UIController.refreshStatus(includeHeavy)
             table.insert(lines, "no boss selected")
         end
         for _, bossName in ipairs(targets) do
-            local catalogItem = BossFarm.getSummonEntry(bossName)
-            local aliveText = BossFarm.isBossAlive(bossName) and "alive" or "not spawned"
-            if catalogItem then
-                local shortfalls = BossFarm.getSummonShortfall(catalogItem)
-                local needText = (#shortfalls == 0) and "summon ready" or ("need " .. BossFarm.describeShortfall(shortfalls))
-                table.insert(lines, string.format("%s | %s | %s | %s", bossName, tostring(catalogItem.NPC or "event"), aliveText, needText))
+            if bossName == "Yhwach (Summoned)" or bossName == "Yhwach Not Dungeon" then
+                local yh = Extras.Yhwach
+                local king = yh and yh.findKing()
+                if king then
+                    table.insert(lines, "Yhwach (Summoned) | ALIVE (Quincy King ready)")
+                else
+                    local setKills = yh and yh.setCount() or 0
+                    local reishi = getInventoryAmount(yh and yh.ReishiItem or "Reishi Fragment")
+                    table.insert(lines, string.format("Yhwach (Summoned) | Set: %d/5 statues | Reishi: %d", setKills, reishi))
+                end
+            elseif bossName == "Yhwach (Global Boss)" or bossName == "Yhwach" then
+                local alive = BossFarm.isBossAlive("Yhwach")
+                table.insert(lines, string.format("Yhwach (Global Boss) | %s", alive and "ALIVE (World Event)" or "waiting for event spawn"))
             else
-                table.insert(lines, string.format("%s | %s", bossName, aliveText))
+                local catalogItem = BossFarm.getSummonEntry(bossName)
+                local aliveText = BossFarm.isBossAlive(bossName) and "alive" or "not spawned"
+                if catalogItem then
+                    local shortfalls = BossFarm.getSummonShortfall(catalogItem)
+                    local needText = (#shortfalls == 0) and "summon ready" or ("need " .. BossFarm.describeShortfall(shortfalls))
+                    table.insert(lines, string.format("%s | %s | %s | %s", bossName, tostring(catalogItem.NPC or "event"), aliveText, needText))
+                else
+                    table.insert(lines, string.format("%s | %s", bossName, aliveText))
+                end
             end
         end
         pcall(function()
@@ -17944,67 +18166,185 @@ function UIController.Init()
     local bossLeft = BossTab:Section({ Side = "Left" })
     local bossRight = BossTab:Section({ Side = "Right" })
 
-    local bossLabels = {}
-    local bossNameByLabel = {}
-    local bossListed = {}
+    do
+        local quincyStatueOptions = {
+            "As Nodt",
+            "Askin Nakk Le Vaar",
+            "Bambietta Basterbine",
+            "Gremmy Thoumeaux",
+            "Jugram Haschwalth"
+        }
 
-    for _, group in ipairs(bossCatalogGroups) do
-        for _, bossName in ipairs(group.Names) do
-            local label = "[" .. group.Label .. "] " .. bossName
-            table.insert(bossLabels, label)
-            bossNameByLabel[label] = bossName
-            bossListed[bossName] = true
+        local altarBossOptions = {
+            "One-Eyed Owl",
+            "Cid Kagenou",
+            "The Red Mist",
+            "Demon Infernal",
+            "Dio"
+        }
+
+        local whispererBossOptions = {
+            "Sosuke Aizen",
+            "Ichigo Kurosaki",
+            "Ichigo Kurosaki Bankai",
+            "Ichigo True Bankai",
+            "Satoru Gojo",
+            "Ryomen Sukuna",
+            "Garou",
+            "Blast",
+            "Flashy Flash",
+            "Ken Kaneki",
+            "Akaza",
+            "Chihora",
+            "Solemn Lament",
+            "Chad",
+            "Undyne",
+            "Fishman Captain"
+        }
+
+        local function getDefaults(options)
+            local defaults = {}
+            for _, opt in ipairs(options) do
+                if State.BossSelection[opt] then
+                    table.insert(defaults, opt)
+                end
+            end
+            return defaults
         end
-    end
 
-    for _, item in ipairs(summonCatalog) do
-        if not bossListed[item.Name] then
-            local label = "[" .. item.Group .. "] " .. item.Name
-            table.insert(bossLabels, label)
-            bossNameByLabel[label] = item.Name
-            bossListed[item.Name] = true
-        end
-    end
+        bossLeft:Header({ Text = "Quick Actions" })
+        bossLeft:Button({
+            Name = "Clear All Selected Bosses",
+            Callback = function()
+                State.BossSelection = {}
+                pcall(function()
+                    if UIController.YhwachGlobalToggle then
+                        UIController.YhwachGlobalToggle:UpdateState(false)
+                    end
+                    if UIController.YhwachSummonToggle then
+                        UIController.YhwachSummonToggle:UpdateState(false)
+                    end
+                    if UIController.AltarDropdown then
+                        UIController.AltarDropdown:UpdateSelection({})
+                    end
+                    if UIController.QuincyDropdown then
+                        UIController.QuincyDropdown:UpdateSelection({})
+                    end
+                    if UIController.WhispererDropdown then
+                        UIController.WhispererDropdown:UpdateSelection({})
+                    end
+                end)
+            end
+        })
 
-    bossLeft:Header({ Text = "Boss Selection" })
-    local bossDropdownCreated = pcall(function()
-        bossLeft:Dropdown({
-            Name = "Select Bosses (Multi-Select)",
+        bossLeft:Button({
+            Name = "Select All Altar Bosses",
+            Callback = function()
+                local map = {}
+                for _, name in ipairs(altarBossOptions) do
+                    State.BossSelection[name] = true
+                    map[name] = true
+                end
+                pcall(function()
+                    if UIController.AltarDropdown then
+                        UIController.AltarDropdown:UpdateSelection(map)
+                    end
+                end)
+            end
+        })
+
+        bossLeft:Button({
+            Name = "Select All Quincy Statues",
+            Callback = function()
+                local map = {}
+                for _, name in ipairs(quincyStatueOptions) do
+                    State.BossSelection[name] = true
+                    map[name] = true
+                end
+                pcall(function()
+                    if UIController.QuincyDropdown then
+                        UIController.QuincyDropdown:UpdateSelection(map)
+                    end
+                end)
+            end
+        })
+
+        bossLeft:Header({ Text = "Yhwach Bosses" })
+        UIController.YhwachGlobalToggle = bossLeft:Toggle({
+            Name = "Yhwach (Global Boss)",
+            Default = State.BossSelection["Yhwach (Global Boss)"] == true or State.BossSelection["Yhwach"] == true,
+            Callback = function(value)
+                State.BossSelection["Yhwach (Global Boss)"] = value or nil
+                State.BossSelection["Yhwach"] = value or nil
+            end
+        })
+
+        UIController.YhwachSummonToggle = bossLeft:Toggle({
+            Name = "Yhwach (Summoned - Auto 5 Statues)",
+            Default = State.BossSelection["Yhwach (Summoned)"] == true or State.BossSelection["Yhwach Not Dungeon"] == true,
+            Callback = function(value)
+                State.BossSelection["Yhwach (Summoned)"] = value or nil
+                State.BossSelection["Yhwach Not Dungeon"] = value or nil
+            end
+        })
+
+        bossLeft:Header({ Text = "Altar Summon Bosses" })
+        UIController.AltarDropdown = bossLeft:Dropdown({
+            Name = "Altar Bosses (Multi-Select)",
+            Multi = true,
+            Required = false,
+            Options = altarBossOptions,
+            Default = getDefaults(altarBossOptions),
+            Callback = function(value)
+                if typeof(value) == "string" then
+                    State.BossSelection[value] = (not State.BossSelection[value]) or nil
+                    return
+                end
+                local selected = parseMultiSelection(value)
+                for _, opt in ipairs(altarBossOptions) do
+                    State.BossSelection[opt] = selected[opt] == true or nil
+                end
+            end
+        })
+
+        bossLeft:Header({ Text = "Quincy Statues (Material Farm)" })
+        UIController.QuincyDropdown = bossLeft:Dropdown({
+            Name = "Quincy Statues (Multi-Select)",
+            Multi = true,
+            Required = false,
+            Options = quincyStatueOptions,
+            Default = getDefaults(quincyStatueOptions),
+            Callback = function(value)
+                if typeof(value) == "string" then
+                    State.BossSelection[value] = (not State.BossSelection[value]) or nil
+                    return
+                end
+                local selected = parseMultiSelection(value)
+                for _, opt in ipairs(quincyStatueOptions) do
+                    State.BossSelection[opt] = selected[opt] == true or nil
+                end
+            end
+        })
+
+        bossLeft:Header({ Text = "Whisperer Bosses" })
+        UIController.WhispererDropdown = bossLeft:Dropdown({
+            Name = "Whisperer Bosses (Multi-Select)",
             Search = true,
             Multi = true,
             Required = false,
-            Options = bossLabels,
-            Default = {},
+            Options = whispererBossOptions,
+            Default = getDefaults(whispererBossOptions),
             Callback = function(value)
                 if typeof(value) == "string" then
-                    local toggledBoss = bossNameByLabel[value] or value
-                    State.BossSelection[toggledBoss] = (not State.BossSelection[toggledBoss]) or nil
+                    State.BossSelection[value] = (not State.BossSelection[value]) or nil
                     return
                 end
-                local selectedLabels = parseMultiSelection(value)
-                local newSelection = {}
-                for label in pairs(selectedLabels) do
-                    local bossName = bossNameByLabel[label] or label
-                    newSelection[bossName] = true
+                local selected = parseMultiSelection(value)
+                for _, opt in ipairs(whispererBossOptions) do
+                    State.BossSelection[opt] = selected[opt] == true or nil
                 end
-                State.BossSelection = newSelection
             end
         })
-    end)
-
-    if not bossDropdownCreated then
-        for _, group in ipairs(bossCatalogGroups) do
-            bossLeft:Header({ Text = group.Label })
-            for _, bossName in ipairs(group.Names) do
-                bossLeft:Toggle({
-                    Name = bossName,
-                    Default = false,
-                    Callback = function(value)
-                        State.BossSelection[bossName] = value or nil
-                    end
-                })
-            end
-        end
     end
 
     bossRight:Header({ Text = "Boss Farming" })
