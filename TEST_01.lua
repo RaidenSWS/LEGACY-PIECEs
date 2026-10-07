@@ -60,6 +60,9 @@ local State = {
     FarmSkills = { Z = true, X = true, C = true, V = false, F = false, B = false },
     AutoUseSkills = true,
     AutoOverHeavenEnabled = false,
+    SelectedStyle = "Current",
+    SelectedWeapon = "Current",
+    SelectedAbility = "Current",
     MultiCastSkills = false,
     FarmDistance = 25,
     FarmPosition = "Below",
@@ -2050,6 +2053,66 @@ local function equipInventoryItem(itemName)
     return isItemEquipped(itemName)
 end
 
+function Extras.getInventoryItemsByType(typeName)
+    local items = { "Current" }
+    local seen = { Current = true }
+    local dataFolder = localPlayer:FindFirstChild("Data")
+    local invFolder = dataFolder and dataFolder:FindFirstChild("Inventory")
+    if invFolder then
+        for _, child in ipairs(invFolder:GetChildren()) do
+            local info = itemData[child.Name]
+            if info and info.Type == typeName and not seen[child.Name] then
+                seen[child.Name] = true
+                table.insert(items, child.Name)
+            end
+        end
+    end
+    local curVal = dataFolder and dataFolder:FindFirstChild("Current" .. tostring(typeName))
+    if curVal and curVal.Value ~= "" then
+        local realName = Extras.findInventoryItemByIdentity and Extras.findInventoryItemByIdentity(curVal.Value) or curVal.Value
+        if not seen[realName] then
+            seen[realName] = true
+            table.insert(items, realName)
+        end
+    end
+    table.sort(items, function(a, b)
+        if a == "Current" then
+            return true
+        end
+        if b == "Current" then
+            return false
+        end
+        return a < b
+    end)
+    return items
+end
+
+function Extras.enforcePreferredLoadout()
+    if Extras.Twoh and (Extras.Twoh.SealPrompt ~= nil or Extras.Twoh.EnteringRealm or Extras.Twoh.TimeStoppingBoss) then
+        return
+    end
+    if Extras.isCarryingCoffin and Extras.isCarryingCoffin() then
+        return
+    end
+    local inTwohRealm = workspaceService:GetAttribute("Dungeon") == "Realm Beyond Heaven" or (Extras.Twoh and Extras.Twoh.EnteringRealm)
+    local wantedStyle = inTwohRealm and "The World" or State.SelectedStyle
+    if wantedStyle and wantedStyle ~= "Current" and wantedStyle ~= "" then
+        if not isItemEquipped(wantedStyle) and getInventoryAmount(wantedStyle) > 0 then
+            equipInventoryItem(wantedStyle)
+        end
+    end
+    if State.SelectedWeapon and State.SelectedWeapon ~= "Current" and State.SelectedWeapon ~= "" then
+        if not isItemEquipped(State.SelectedWeapon) and getInventoryAmount(State.SelectedWeapon) > 0 then
+            equipInventoryItem(State.SelectedWeapon)
+        end
+    end
+    if State.SelectedAbility and State.SelectedAbility ~= "Current" and State.SelectedAbility ~= "" then
+        if not isItemEquipped(State.SelectedAbility) and getInventoryAmount(State.SelectedAbility) > 0 then
+            equipInventoryItem(State.SelectedAbility)
+        end
+    end
+end
+
 local function getNearestIslandName(targetPosition)
     local islandsFolder = workspaceService:FindFirstChild("Islands") and workspaceService.Islands:FindFirstChild("Islands")
     if not islandsFolder then
@@ -3274,6 +3337,32 @@ local function findToolForCombatType(character, combatType)
         return info ~= nil and info.Type == wantedType
     end
 
+    local preferredName = nil
+    if wantedType == "Style" then
+        if workspaceService:GetAttribute("Dungeon") == "Realm Beyond Heaven" or (Extras.Twoh and Extras.Twoh.EnteringRealm) then
+            preferredName = "The World"
+        elseif State.SelectedStyle and State.SelectedStyle ~= "Current" and State.SelectedStyle ~= "" then
+            preferredName = State.SelectedStyle
+        end
+    elseif wantedType == "Weapon" and State.SelectedWeapon and State.SelectedWeapon ~= "Current" and State.SelectedWeapon ~= "" then
+        preferredName = State.SelectedWeapon
+    elseif wantedType == "Ability" and State.SelectedAbility and State.SelectedAbility ~= "Current" and State.SelectedAbility ~= "" then
+        preferredName = State.SelectedAbility
+    end
+
+    if preferredName then
+        local toolInChar = character:FindFirstChild(preferredName)
+        if toolInChar and toolInChar:IsA("Tool") then
+            return toolInChar, true
+        end
+        if backpack then
+            local toolInBackpack = backpack:FindFirstChild(preferredName)
+            if toolInBackpack and toolInBackpack:IsA("Tool") then
+                return toolInBackpack, false
+            end
+        end
+    end
+
     for _, tool in ipairs(character:GetChildren()) do
         if matches(tool) then
             return tool, true
@@ -3750,6 +3839,11 @@ function Combat.tick()
         return
     end
 
+    if (Combat.NextLoadoutCheckAt or 0) <= os.clock() then
+        Combat.NextLoadoutCheckAt = os.clock() + 3
+        pcall(Extras.enforcePreferredLoadout)
+    end
+
     local approaching = travelActive or currentTween ~= nil
     if approaching and not Combat.ApproachRoot then
         return
@@ -3815,6 +3909,10 @@ function Combat.tick()
 
     if now - (State.LastSkillStart or 0) < 0.2 then
         return
+    end
+
+    if enemyRoot and Extras.Twoh and Extras.Twoh.shouldBossTimeStop(enemyModel) then
+        Extras.Twoh.doBossTimeStop(enemyRoot)
     end
 
     if State.AutoUseSkills then
@@ -4599,6 +4697,11 @@ function AutoPickup.handleTimed(target)
             AutoPickup.shedCombat(target)
             if target.Coffin then
                 local delivered = Extras.runCoffinStep(AutoPickup.isActive)
+                if State.SelectedAbility and State.SelectedAbility ~= "Current" and State.SelectedAbility ~= "" then
+                    pcall(function()
+                        equipInventoryItem(State.SelectedAbility)
+                    end)
+                end
                 if not delivered and not Extras.isCarryingCoffin() then
                     AutoPickup.IgnoreUntil.coffin = os.clock() + 60
                 end
@@ -6904,6 +7007,51 @@ function Extras.enterSelectedDungeon(entry, isActive, statusSetter, prepareStyle
         task.wait(2)
         return false
     end
+    if entry.Portal == "RealmBeyondHeavenPortal" or entry.Key == "Realm Beyond Heaven" then
+        Extras.Twoh.EnteringRealm = true
+        Extras.clearCombatLocks()
+        statusSetter("equipping The World to open Realm Beyond Heaven")
+        local actingDead = os.clock() + 3
+        while localPlayer.Character and localPlayer.Character:FindFirstChild("Acting") and os.clock() < actingDead do
+            task.wait(0.1)
+        end
+        if not isItemEquipped("The World") then
+            equipInventoryItem("The World")
+            task.wait(0.5)
+        end
+        local useRemote = remotesFolder:FindFirstChild("RE_UseItem")
+        if useRemote and entry.Item and getInventoryAmount(entry.Item) > 0 then
+            statusSetter("using " .. entry.Item .. " to open Realm Beyond Heaven")
+            useRemote:FireServer(entry.Item, 1, 0)
+            local joinDead = os.clock() + 3
+            while isActive() and os.clock() < joinDead do
+                task.wait(0.2)
+                if workspaceService:GetAttribute("Dungeon") == entry.Key then
+                    break
+                end
+            end
+            if portalRemote then
+                pcall(function()
+                    portalRemote:FireServer("Start")
+                end)
+            end
+            Extras.expectTeleport(20)
+            local deadline = os.clock() + 15
+            while isActive() and os.clock() < deadline do
+                task.wait(0.5)
+                if workspaceService:GetAttribute("Dungeon") == entry.Key then
+                    Extras.Twoh.EnteringRealm = false
+                    twoh.applyStyle()
+                    return true
+                end
+            end
+        end
+        Extras.Twoh.EnteringRealm = false
+        if workspaceService:GetAttribute("Dungeon") == entry.Key then
+            twoh.applyStyle()
+            return true
+        end
+    end
     if prepareStyle then
         prepareStyle()
     elseif entry.Style and not isItemEquipped(entry.Style) then
@@ -7085,7 +7233,9 @@ Extras.Twoh = {
     WaitSince = nil,
     RealmRequesters = {},
     Delegated = false,
-    PrestigeKillType = "DioHeavenAscensionKills"
+    PrestigeKillType = "DioHeavenAscensionKills",
+    EnteringRealm = false,
+    TimeStoppingBoss = false
 }
 
 function Extras.Twoh.status(message)
@@ -7305,28 +7455,20 @@ end
 
 function Extras.Twoh.restoreStyle()
     local twoh = Extras.Twoh
-    local saved = twoh.SavedCombat
-    if not saved then
+    local targetStyle = (State.SelectedStyle and State.SelectedStyle ~= "Current" and State.SelectedStyle ~= "" and State.SelectedStyle)
+    if not targetStyle and twoh.SavedCombat and twoh.SavedCombat.Style and twoh.SavedCombat.Style ~= "__none" and twoh.SavedCombat.Style ~= twoh.StyleName then
+        targetStyle = twoh.SavedCombat.Style
+    end
+    if not targetStyle then
         local marker = getgenv().HubTwohPrevStyle
-        if marker == "__none" or (typeof(marker) == "string" and getInventoryAmount(marker) <= 0) then
-            getgenv().HubTwohPrevStyle = nil
-        elseif typeof(marker) == "string" and marker ~= twoh.StyleName and isItemEquipped(twoh.StyleName) and (twoh.RestoreTries or 0) < 3 then
-            twoh.RestoreTries = (twoh.RestoreTries or 0) + 1
-            if equipInventoryItem(marker) then
-                getgenv().HubTwohPrevStyle = nil
-                twoh.RestoreTries = 0
-            end
+        if typeof(marker) == "string" and marker ~= "__none" and marker ~= twoh.StyleName then
+            targetStyle = marker
         end
-        return
     end
     twoh.SavedCombat = nil
-    local previous = saved.Style
-    if previous and previous ~= "__none" and previous ~= twoh.StyleName and getInventoryAmount(previous) > 0 then
-        if equipInventoryItem(previous) then
-            getgenv().HubTwohPrevStyle = nil
-        end
-    else
-        getgenv().HubTwohPrevStyle = nil
+    getgenv().HubTwohPrevStyle = nil
+    if targetStyle and targetStyle ~= twoh.StyleName and getInventoryAmount(targetStyle) > 0 then
+        equipInventoryItem(targetStyle)
     end
 end
 
@@ -7895,22 +8037,59 @@ end
 
 function Extras.Twoh.enterRealm(stage)
     local twoh = Extras.Twoh
-    local entry = twoh.getRealmEntry()
-    if not entry then
-        twoh.fail("Realm Beyond Heaven entry data missing")
-        return
-    end
     local label = twoh.stageLabel(stage)
     local keysBefore = getInventoryAmount(twoh.KeyItem)
+    if keysBefore <= 0 then
+        twoh.farmKeys(stage)
+        return
+    end
     twoh.saveState({ PendingKeys = keysBefore, PendingVia = "entry" })
     twoh.log(string.format("ENTER stage=%s keys=%d", tostring(stage), keysBefore))
-    local started = Extras.enterSelectedDungeon(entry, twoh.isActive, function(message)
-        twoh.status(label .. " | keys " .. getInventoryAmount(twoh.KeyItem) .. " | " .. tostring(message))
-    end, twoh.applyStyle)
-    if not started and twoh.isActive() then
-        twoh.log(string.format("ENTER FAILED keys %d -> %d paid=%s portal=%s", keysBefore, getInventoryAmount(twoh.KeyItem), tostring(Extras.LastEntryKeyPaid), table.concat(Extras.LastPortalReplies or {}, ",")))
-        twoh.fail("Realm Beyond Heaven did not start | keys " .. keysBefore .. " -> " .. getInventoryAmount(twoh.KeyItem))
+    twoh.EnteringRealm = true
+    Extras.clearCombatLocks()
+    twoh.status(label .. " | equipping " .. twoh.StyleName .. " to open Realm Beyond Heaven")
+    local actingDead = os.clock() + 3
+    while localPlayer.Character and localPlayer.Character:FindFirstChild("Acting") and os.clock() < actingDead do
+        task.wait(0.1)
     end
+    if not isItemEquipped(twoh.StyleName) then
+        equipInventoryItem(twoh.StyleName)
+        task.wait(0.5)
+    end
+    local useRemote = remotesFolder:FindFirstChild("RE_UseItem")
+    local portalRemote = eventsFolder and eventsFolder:FindFirstChild("RealmBeyondHeavenPortal")
+    if useRemote then
+        twoh.status(label .. " | using key to open Realm Beyond Heaven")
+        useRemote:FireServer(twoh.KeyItem, 1, 0)
+        local joinDead = os.clock() + 3
+        while twoh.isActive() and os.clock() < joinDead do
+            task.wait(0.2)
+            if workspaceService:GetAttribute("Dungeon") == twoh.RealmName then
+                break
+            end
+        end
+        if portalRemote then
+            pcall(function()
+                portalRemote:FireServer("Start")
+            end)
+        end
+        Extras.expectTeleport(20)
+        local deadline = os.clock() + 15
+        while twoh.isActive() and os.clock() < deadline do
+            task.wait(0.5)
+            if workspaceService:GetAttribute("Dungeon") == twoh.RealmName then
+                twoh.EnteringRealm = false
+                twoh.applyStyle()
+                return
+            end
+        end
+    end
+    twoh.EnteringRealm = false
+    if workspaceService:GetAttribute("Dungeon") == twoh.RealmName then
+        twoh.applyStyle()
+        return
+    end
+    twoh.fail("Realm Beyond Heaven did not start | keys " .. keysBefore .. " -> " .. getInventoryAmount(twoh.KeyItem))
 end
 
 function Extras.Twoh.runRealmStage(stage)
@@ -8362,6 +8541,48 @@ function Extras.Twoh.castZaWarudo(aimPosition)
     return false
 end
 
+function Extras.Twoh.shouldBossTimeStop(enemyModel)
+    local twoh = Extras.Twoh
+    if not twoh or twoh.TimeStoppingBoss or twoh.SealPrompt ~= nil or twoh.EnteringRealm then
+        return false
+    end
+    if not enemyModel then
+        return false
+    end
+    local name = enemyModel.Name
+    local isBoss = name == "Shadow DIO" or name == "Dio Heaven Ascension" or name == "Chihora" or isKnownBossName(name) or string.find(name, "DIO", 1, true) ~= nil or string.find(name, "Dio", 1, true) ~= nil
+    if not isBoss then
+        return false
+    end
+    if getInventoryAmount(twoh.StyleName) <= 0 then
+        return false
+    end
+    local serverNow = workspaceService:GetServerTimeNow()
+    local readyAt = State.SkillCooldowns[twoh.StyleName .. "|F"] or 0
+    if serverNow < readyAt or twoh.windowLeft() > 0.1 then
+        return false
+    end
+    local character = localPlayer.Character
+    if not character or character:FindFirstChild("Acting") or character:FindFirstChild("Stunned") then
+        return false
+    end
+    return true
+end
+
+function Extras.Twoh.doBossTimeStop(enemyRoot)
+    local twoh = Extras.Twoh
+    twoh.TimeStoppingBoss = true
+    twoh.realmStatus("Za Warudo against boss | freezing time")
+    pcall(function()
+        twoh.holdTheWorld()
+        task.wait(0.15)
+        twoh.castZaWarudo(enemyRoot.Position)
+    end)
+    task.wait(0.1)
+    twoh.TimeStoppingBoss = false
+    twoh.applyStyle()
+end
+
 function Extras.Twoh.stillSeal(prompt)
     local twoh = Extras.Twoh
     local holder = prompt.Parent
@@ -8494,6 +8715,7 @@ function Extras.Twoh.stillSeal(prompt)
         twoh.SealCastAt = nil
         lockedTargetCFrame = nil
         twoh.realmStatus("Chrono Seal " .. sealName .. " stilled | the shadow comes")
+        twoh.applyStyle()
     else
         local reply = (State.LastNotifyTime or 0) > notifyBefore and tostring(State.LastNotifyText) or "no reply"
         twoh.log(string.format("SEAL %s prompt not accepted (%s) | window %.1fs left", sealName, reply, twoh.windowLeft()))
@@ -8554,6 +8776,9 @@ function Extras.Twoh.runRealm()
         return
     end
     twoh.applyStyle()
+    if twoh.SealPrompt == nil and not twoh.TimeStoppingBoss then
+        Extras.enforcePreferredLoadout()
+    end
     if twoh.checkHeight() then
         releaseMovement("twoh")
         return
@@ -8573,6 +8798,10 @@ function Extras.Twoh.runRealm()
     if target then
         twoh.RealmIdleSince = nil
         twoh.realmStatus("fighting " .. target.Name)
+        local enemyRoot = target:FindFirstChild("HumanoidRootPart")
+        if enemyRoot and twoh.shouldBossTimeStop(target) then
+            twoh.doBossTimeStop(enemyRoot)
+        end
         farmMobWithAnchor(target.Name, function()
             return twoh.isActive() and target.Parent ~= nil
         end, true)
@@ -8935,6 +9164,9 @@ Extras.Yhwach = {
 function Extras.Yhwach.status(message)
     Extras.Yhwach.StatusText = tostring(message)
     State.ExtraStatus = "Yhwach: " .. tostring(message)
+    if State.BossFarmEnabled then
+        setFarmStatus("Yhwach: " .. tostring(message))
+    end
 end
 
 function Extras.Yhwach.isActive()
@@ -9871,7 +10103,7 @@ function Extras.Yhwach.farmSoldiers(label, keepGoing)
             task.wait(0.4)
         end
         yh.syncBank()
-        yh.status(string.format("%s | soldiers | bank %d | Reishi %d", label, yh.bank(), getInventoryAmount(yh.ReishiItem)))
+        yh.status(string.format("%s (bank %d, Reishi %d)", label, yh.bank(), getInventoryAmount(yh.ReishiItem)))
         task.wait(0.1)
     end
     Combat.OverrideUntil = 0
@@ -10164,7 +10396,7 @@ function Extras.Yhwach.fightStatue(name)
         yh.stat("StatueReishi", math.max(0, after.Reishi - before.Reishi))
         data.LastStatueMaxHealth = maxHealth
     end
-    if credited then
+    if killed or credited then
         if not data.SetKills[name] then
             yh.stat("StatueKills")
         end
@@ -10295,6 +10527,150 @@ function Extras.Yhwach.waitKing()
     end
 end
 
+function Extras.Yhwach.stepFivePillars(prefix, stopCondition)
+    local yh = Extras.Yhwach
+    local data = yh.data()
+    local label = prefix or yh.Prefix or "Yhwach"
+    local function isActive()
+        return yh.fightActive() and (stopCondition == nil or stopCondition())
+    end
+    if not isActive() then
+        return false
+    end
+    local king = yh.findKing()
+    if not king then
+        local rootPart = getRoot()
+        local origin = rootPart and rootPart.Position or Vector3.zero
+        king = getTargetEnemy("Yhwach Not Dungeon", origin, true)
+    end
+    if king then
+        yh.status(label .. " | engaging Quincy King (Yhwach)")
+        yh.fightKing(king)
+        return true
+    end
+    yh.syncBank()
+    yh.reconcileSummoned()
+    if yh.setCount() >= #yh.Route then
+        yh.status(label .. " | 5/5 statues killed | waiting for Quincy King to spawn")
+        yh.waitKing()
+        return true
+    end
+    local unkilled = {}
+    for _, name in ipairs(yh.Route) do
+        if not data.SetKills[name] then
+            table.insert(unkilled, name)
+        end
+    end
+    local aliveList = {}
+    local pendingStatues = {}
+    for _, name in ipairs(unkilled) do
+        if yh.findBoss(name) then
+            table.insert(aliveList, name)
+        else
+            table.insert(pendingStatues, name)
+        end
+    end
+    local targetKills = (#unkilled >= #yh.Route and #aliveList == 0) and 250 or (#pendingStatues * yh.SummonKills)
+    local targetReishi = (#unkilled >= #yh.Route and #aliveList == 0) and (5 * yh.SummonReishi) or (#pendingStatues * yh.SummonReishi)
+    if #pendingStatues > 0 and #aliveList == 0 and (yh.bank() < targetKills or getInventoryAmount(yh.ReishiItem) < targetReishi) then
+        yh.farmSoldiers(string.format("%s | pre-farm soldiers %d/%d | Reishi %d/%d", label, yh.bank(), targetKills, getInventoryAmount(yh.ReishiItem), targetReishi), function()
+            return isActive() and (yh.bank() < targetKills or getInventoryAmount(yh.ReishiItem) < targetReishi)
+        end)
+        return true
+    end
+    if #pendingStatues > 0 then
+        local order = yh.routeOrder(pendingStatues, #pendingStatues)
+        local toSummon = (#order > 0) and order or pendingStatues
+        for _, name in ipairs(toSummon) do
+            if not isActive() or yh.findKing() then
+                break
+            end
+            if not yh.findBoss(name) then
+                if getInventoryAmount(yh.ReishiItem) < yh.SummonReishi or yh.bank() < yh.SummonKills then
+                    yh.farmSoldiers(string.format("%s | need Reishi/kills for %s | bank %d Reishi %d", label, name, yh.bank(), getInventoryAmount(yh.ReishiItem)), function()
+                        return isActive() and (getInventoryAmount(yh.ReishiItem) < yh.SummonReishi or yh.bank() < yh.SummonKills)
+                    end)
+                    return true
+                end
+                local result = yh.summonStatue(name)
+                if result == "spawned" or result == "alive" then
+                    table.insert(aliveList, name)
+                else
+                    local aliveCount = 0
+                    local firstAlive = nil
+                    for _, aliveName in ipairs(yh.Route) do
+                        if not data.SetKills[aliveName] and yh.findBoss(aliveName) then
+                            aliveCount = aliveCount + 1
+                            if not firstAlive then
+                                firstAlive = aliveName
+                            end
+                        end
+                    end
+                    if firstAlive then
+                        if aliveCount >= 2 and os.clock() - (yh.PulledAt or 0) > yh.PullCooldown then
+                            yh.PulledAt = os.clock()
+                            yh.status(string.format("%s | gathering %d Sternritter at boss area", label, aliveCount))
+                            lockedEnemyRoot = nil
+                            lockedTargetCFrame = nil
+                            setTargetBox(nil)
+                            safeTravelTo(CFrame.new(yh.BossArea + Vector3.new(0, 15, 0)), function()
+                                return isActive()
+                            end)
+                            local holdUntil = os.clock() + yh.PullHold
+                            lockedTargetCFrame = CFrame.new(yh.BossArea + Vector3.new(0, 15, 0))
+                            while isActive() and os.clock() < holdUntil do
+                                task.wait(0.1)
+                            end
+                            lockedTargetCFrame = nil
+                        end
+                        yh.status(string.format("%s | cannot summon %s | defeating %s first", label, name, firstAlive))
+                        yh.fightStatue(firstAlive)
+                        return true
+                    end
+                    if result == "cap" then
+                        task.wait(1)
+                        return true
+                    end
+                    task.wait(0.5)
+                end
+            end
+        end
+    end
+    local aliveCount = 0
+    local targetBoss = nil
+    for _, name in ipairs(yh.Route) do
+        if not data.SetKills[name] and yh.findBoss(name) then
+            aliveCount = aliveCount + 1
+            if not targetBoss then
+                targetBoss = name
+            end
+        end
+    end
+    if aliveCount >= 2 and os.clock() - (yh.PulledAt or 0) > yh.PullCooldown then
+        yh.PulledAt = os.clock()
+        yh.status(string.format("%s | gathering %d Sternritter at boss area", label, aliveCount))
+        lockedEnemyRoot = nil
+        lockedTargetCFrame = nil
+        setTargetBox(nil)
+        safeTravelTo(CFrame.new(yh.BossArea + Vector3.new(0, 15, 0)), function()
+            return isActive()
+        end)
+        local holdUntil = os.clock() + yh.PullHold
+        lockedTargetCFrame = CFrame.new(yh.BossArea + Vector3.new(0, 15, 0))
+        while isActive() and os.clock() < holdUntil do
+            task.wait(0.1)
+        end
+        lockedTargetCFrame = nil
+    end
+    if targetBoss then
+        yh.status(string.format("%s | defeating %s (%d/5)", label, targetBoss, yh.setCount()))
+        yh.fightStatue(targetBoss)
+        return true
+    end
+    task.wait(0.5)
+    return true
+end
+
 function Extras.Yhwach.grindStep(stage)
     local yh = Extras.Yhwach
     local data = yh.data()
@@ -10317,110 +10693,8 @@ function Extras.Yhwach.grindStep(stage)
         end)
         return
     end
-    yh.reconcileSummoned()
-    local wanted = {}
-    for _, name in ipairs(yh.Route) do
-        if needs.King then
-            wanted[name] = not data.SetKills[name]
-        else
-            wanted[name] = needs.Letters[name] == true or needs.Mat[name] > 0
-        end
-    end
-    local rootPart = getRoot()
-    local origin = rootPart and rootPart.Position or yh.SoldierSpot
-    local anyWanted = false
-    local aliveName, aliveDistance = nil, math.huge
-    local pending = {}
-    for _, name in ipairs(yh.Route) do
-        if wanted[name] then
-            anyWanted = true
-            local boss = yh.findBoss(name)
-            local bossRoot = boss and boss:FindFirstChild("HumanoidRootPart")
-            if bossRoot then
-                local distance = (bossRoot.Position - origin).Magnitude
-                if distance < aliveDistance then
-                    aliveName, aliveDistance = name, distance
-                end
-            elseif not data.Summoned[name] and os.clock() >= (yh.BusyUntil[name] or 0) then
-                table.insert(pending, name)
-            end
-        end
-    end
-    if aliveName then
-        yh.StallSince = nil
-        local aliveCount = 0
-        for _, name in ipairs(yh.Route) do
-            if wanted[name] and yh.findBoss(name) then
-                aliveCount = aliveCount + 1
-            end
-        end
-        if aliveCount >= 2 and os.clock() - (yh.PulledAt or 0) > yh.PullCooldown then
-            yh.PulledAt = os.clock()
-            yh.status(string.format("%s | gathering %d Sternritter at the boss area", stage, aliveCount))
-            lockedEnemyRoot = nil
-            lockedTargetCFrame = nil
-            setTargetBox(nil)
-            safeTravelTo(CFrame.new(yh.BossArea + Vector3.new(0, 15, 0)), function()
-                return yh.fightActive()
-            end)
-            local holdUntil = os.clock() + yh.PullHold
-            lockedTargetCFrame = CFrame.new(yh.BossArea + Vector3.new(0, 15, 0))
-            while yh.fightActive() and os.clock() < holdUntil do
-                task.wait(0.1)
-            end
-            lockedTargetCFrame = nil
-            yh.log(string.format("PULL %d Sternritter at the boss area", aliveCount))
-        end
-        yh.fightStatue(aliveName)
-        return
-    end
-    if #pending > 0 then
-        yh.StallSince = nil
-        if os.clock() < (yh.CapUntil or 0) then
-            yh.farmSoldiers(string.format("%s | server boss cap | farming soldiers until a retry", stage), function()
-                return os.clock() < (yh.CapUntil or 0)
-            end)
-            return
-        end
-        if yh.BatchSize > 1 then
-            yh.summonBatch(pending)
-        else
-            yh.fightStatue(pending[1])
-        end
-        return
-    end
-    if anyWanted then
-        yh.StallSince = nil
-        yh.status(stage .. " | every wanted statue is busy | waiting")
-        task.wait(1)
-        return
-    end
-    if needs.King then
-        yh.StallSince = nil
-        yh.waitKing()
-        return
-    end
-    yh.StallSince = yh.StallSince or os.clock()
-    local stalled = os.clock() - yh.StallSince
-    if stalled > yh.StallLimit then
-        yh.StallSince = nil
-        yh.log("STALL " .. stage .. " | nothing left to farm for " .. math.floor(stalled) .. "s | " .. yh.snapshot())
-        local quests = { yh.Audience }
-        local stageQuest = ({ letters = yh.Letters, successor = yh.Successor })[stage]
-        if stageQuest then
-            table.insert(quests, stageQuest)
-        end
-        for _, questName in ipairs(quests) do
-            yh.log(string.format("  %s active=%s ready=%s", questName, tostring(UnlockFarm.getActiveQuestFolder(questName) ~= nil), tostring(UnlockFarm.isQuestReadyToClaim(questName))))
-            for _, objective in ipairs(yh.decode(questName)) do
-                yh.log(string.format("  objective %s %s %d/%d", tostring(objective.Type), tostring(objective.Target), objective.Have, objective.Need))
-            end
-        end
-        yh.halt(string.format("nothing left to farm for %ds but %s is not ready to claim | see yhwach_log.txt", yh.StallLimit, stage))
-        return
-    end
-    yh.status(string.format("%s | nothing left to farm for this stage | rechecking (%ds/%ds)", stage, math.floor(stalled), yh.StallLimit))
-    task.wait(2)
+    yh.StallSince = nil
+    yh.stepFivePillars(stage)
 end
 
 function Extras.Yhwach.claimAudience()
@@ -11848,6 +12122,24 @@ function Extras.findFlightAbility()
     return nil
 end
 
+function Extras.ensureFlightAbility()
+    local flightTool = Extras.findFlightAbility()
+    if flightTool then
+        return flightTool
+    end
+    if getInventoryAmount("Tatsumaki") > 0 and not isItemEquipped("Tatsumaki") then
+        equipInventoryItem("Tatsumaki")
+        task.wait(0.5)
+        return Extras.findFlightAbility()
+    end
+    if getInventoryAmount("Storm Esper") > 0 and not isItemEquipped("Storm Esper") then
+        equipInventoryItem("Storm Esper")
+        task.wait(0.5)
+        return Extras.findFlightAbility()
+    end
+    return nil
+end
+
 function Extras.getFlightKey(activeTool)
     if not activeTool or type(activeTool.SkillList) ~= "table" then
         return nil
@@ -11862,7 +12154,7 @@ function Extras.getFlightKey(activeTool)
 end
 
 function Extras.abilityFlyTo(targetPosition, isActive, maxSeconds)
-    local tool = Extras.findFlightAbility()
+    local tool = Extras.ensureFlightAbility() or Extras.findFlightAbility()
     local swimRoot, playerHumanoid = getRoot()
     if not tool or not playerHumanoid then
         return false
@@ -11987,7 +12279,7 @@ function Extras.flyLongTrip(targetSource, checkCondition)
             end
         end
     end
-    if not Extras.findFlightAbility() then
+    if not (Extras.ensureFlightAbility() or Extras.findFlightAbility()) then
         return false
     end
     local isActive = function()
@@ -12011,6 +12303,7 @@ function Extras.deliverCoffin(isActive)
     end
 
     Extras.clearCombatLocks()
+    Extras.ensureFlightAbility()
     if (rootPart.Position - strangerPosition).Magnitude > 150 then
         State.ExtraStatus = "Coffin: carrying to Mysterious Stranger (ability flight)"
         pcall(Extras.abilityFlyTo, strangerPosition + Vector3.new(0, 15, 0), isActive, 120)
@@ -12072,6 +12365,11 @@ function Extras.deliverCoffin(isActive)
         Extras.CoffinDeliveryFails = 0
     end
     State.ExtraStatus = "Coffin: delivery done | " .. tostring(State.LastNotifyText)
+    if State.SelectedAbility and State.SelectedAbility ~= "Current" and State.SelectedAbility ~= "" then
+        pcall(function()
+            equipInventoryItem(State.SelectedAbility)
+        end)
+    end
     return not Extras.isCarryingCoffin()
 end
 
@@ -12111,7 +12409,20 @@ function Extras.runCoffinStep(isActive)
 
     if Extras.isCarryingCoffin() then
         Extras.forgetItemIndicator("coffin")
-        return Extras.deliverCoffin(isActive)
+        local res = Extras.deliverCoffin(isActive)
+        if State.SelectedAbility and State.SelectedAbility ~= "Current" and State.SelectedAbility ~= "" then
+            pcall(function()
+                equipInventoryItem(State.SelectedAbility)
+            end)
+        end
+        return res
+    end
+    if getInventoryAmount("Tatsumaki") > 0 or getInventoryAmount("Storm Esper") > 0 then
+        if not isItemEquipped("Tatsumaki") and not isItemEquipped("Storm Esper") then
+            pcall(function()
+                equipInventoryItem("Tatsumaki")
+            end)
+        end
     end
 
     local coffin, prompt = Extras.findCoffin()
@@ -13847,7 +14158,6 @@ function Extras.stopAll()
     end
 end
 
-local prestigeThread = nil
 
 function Prestige.getRequirementProgress()
     local dataFolder = localPlayer:FindFirstChild("Data")
@@ -14142,7 +14452,7 @@ function Prestige.travelAndPrestige(skipRemote)
     return success
 end
 
-local prestigeBossMap = {
+Prestige.BossMap = {
     CidKills = "Cid Kagenou",
     OwlKills = "One-Eyed Owl",
     RedMistKills = "The Red Mist",
@@ -14314,7 +14624,7 @@ function Prestige.planRequirements(progress)
             if Prestige.ParkedTypes[req.Type] then
                 table.insert(plan.Parked, req)
             elseif string.find(req.Type, "Kills$") and req.Type ~= "NPCKills" then
-                local bossName = prestigeBossMap[req.Type] or prestigeKillBossMap[req.Type] or req.Name
+                local bossName = Prestige.BossMap[req.Type] or prestigeKillBossMap[req.Type] or req.Name
                 if bossName then
                     local summonable = summonEntryByName[normalizeName(bossName)] ~= nil
                     local dungeonKey, dungeonInfo = nil, nil
@@ -14843,7 +15153,7 @@ function Prestige.Start()
     Prestige.remoteFailures = 0
     Prestige.hookSignals()
 
-    prestigeThread = task.spawn(function()
+    Prestige.Thread = task.spawn(function()
         while State.PrestigeEnabled do
             task.wait(0.1)
             local ok, stepError = pcall(Prestige.step)
@@ -14955,9 +15265,9 @@ function Prestige.Stop()
     lockedTargetCFrame = nil
     Prestige.DungeonWork = nil
     releaseMovement("prestige")
-    if prestigeThread then
-        task.cancel(prestigeThread)
-        prestigeThread = nil
+    if Prestige.Thread then
+        task.cancel(Prestige.Thread)
+        Prestige.Thread = nil
     end
     if Extras.Twoh.Delegated and not State.AutoTwohEnabled then
         wasTravelling = true
@@ -14977,8 +15287,6 @@ function Prestige.Stop()
     end
 end
 
-local unlockFarmThread = nil
-local unlockFailureCount = 0
 
 function UnlockFarm.getCatalog(categoryName)
     local list = {}
@@ -15500,9 +15808,9 @@ function UnlockFarm.progressQuest(questName)
         lastKnownMobCFrame = nil
 
         if UnlockFarm.claimQuest(questName) then
-            unlockFailureCount = 0
+            UnlockFarm.FailureCount = 0
         else
-            unlockFailureCount = unlockFailureCount + 1
+            UnlockFarm.FailureCount = UnlockFarm.FailureCount + 1
             task.wait(2)
         end
         return
@@ -15515,9 +15823,9 @@ function UnlockFarm.progressQuest(questName)
         lastKnownMobCFrame = nil
 
         if UnlockFarm.acceptQuest(questName) then
-            unlockFailureCount = 0
+            UnlockFarm.FailureCount = 0
         else
-            unlockFailureCount = unlockFailureCount + 1
+            UnlockFarm.FailureCount = UnlockFarm.FailureCount + 1
             task.wait(2)
         end
         return
@@ -15821,10 +16129,10 @@ function UnlockFarm.runTarget(targetItem, ownerName)
 
     State.UnlockStatus = "Buying " .. targetItem .. " from " .. recipe.NPC
     if UnlockFarm.buyItem(targetItem, recipe) then
-        unlockFailureCount = 0
+        UnlockFarm.FailureCount = 0
         State.UnlockStatus = targetItem .. " unlocked"
     else
-        unlockFailureCount = unlockFailureCount + 1
+        UnlockFarm.FailureCount = UnlockFarm.FailureCount + 1
         task.wait(1.5)
     end
 end
@@ -15835,9 +16143,9 @@ function UnlockFarm.Start()
     end
 
     State.UnlockEnabled = true
-    unlockFailureCount = 0
+    UnlockFarm.FailureCount = 0
 
-    unlockFarmThread = task.spawn(function()
+    UnlockFarm.Thread = task.spawn(function()
         while State.UnlockEnabled do
             task.wait(0.3)
 
@@ -15878,9 +16186,9 @@ function UnlockFarm.Start()
                 releaseMovement("unlock")
             end
 
-            if unlockFailureCount >= 6 then
+            if UnlockFarm.FailureCount >= 6 then
                 State.UnlockStatus = "Paused after repeated failures | " .. tostring(State.UnlockStatus)
-                unlockFailureCount = 0
+                UnlockFarm.FailureCount = 0
                 task.wait(10)
             end
         end
@@ -15980,7 +16288,6 @@ function UnlockFarm.describeTarget(itemName)
     return lines
 end
 
-local bossFarmThread = nil
 
 function BossFarm.getSummonEntry(bossName)
     if not bossName then
@@ -16495,18 +16802,12 @@ function BossFarm.stepSummonedYhwach(stopCondition)
     if not yh then
         return false
     end
-    local king = yh.findKing()
-    if not king then
-        local rootPart = getRoot()
-        local origin = rootPart and rootPart.Position or Vector3.zero
-        king = getTargetEnemy("Yhwach Not Dungeon", origin, true)
-    end
-    if king then
-        setFarmStatus("Engaging Quincy King (Yhwach Not Dungeon)")
-        yh.fightKing(king)
-        return true
-    end
     if not State.AutoSummonBoss then
+        local king = yh.findKing()
+        if king then
+            yh.fightKing(king)
+            return true
+        end
         setFarmStatus("Waiting for Yhwach (Summoned) to spawn (auto summon off)")
         task.wait(2)
         return false
@@ -16517,44 +16818,7 @@ function BossFarm.stepSummonedYhwach(stopCondition)
         task.wait(2)
         return false
     end
-    yh.syncBank()
-    yh.reconcileSummoned()
-    local data = yh.data()
-    local nextStatue = nil
-    for _, name in ipairs(yh.Route) do
-        local aliveBoss = yh.findBoss(name)
-        if aliveBoss then
-            nextStatue = name
-            break
-        end
-        if not data.SetKills[name] and not nextStatue then
-            nextStatue = name
-        end
-    end
-    if not nextStatue then
-        if yh.setCount() >= #yh.Route then
-            setFarmStatus("All 5 statues killed | waiting for Quincy King to spawn")
-            local deadline = os.clock() + 15
-            while os.clock() < deadline and (stopCondition == nil or stopCondition()) do
-                king = yh.findKing()
-                if king then
-                    setFarmStatus("Engaging Quincy King")
-                    yh.fightKing(king)
-                    return true
-                end
-                task.wait(0.5)
-            end
-            data.SetKills = {}
-            yh.save()
-        else
-            data.SetKills = {}
-            yh.save()
-        end
-        return false
-    end
-    setFarmStatus("Yhwach Summon Set (" .. tostring(yh.setCount()) .. "/5) | " .. nextStatue)
-    yh.fightStatue(nextStatue)
-    return true
+    return yh.stepFivePillars("BossFarm", stopCondition)
 end
 
 function BossFarm.summonBoss(catalogItem)
@@ -17048,7 +17312,7 @@ function BossFarm.Start()
     State.BossFarmEnabled = true
     BossFarm.hookBossEvents()
 
-    bossFarmThread = task.spawn(function()
+    BossFarm.Thread = task.spawn(function()
         while State.BossFarmEnabled do
             task.wait(0.3)
 
@@ -17092,7 +17356,6 @@ function BossFarm.Stop()
     removeFloat(getRoot())
 end
 
-local farmLevelThread = nil
 
 function FarmLevel.getRecommendedQuest()
     local currentLevel = getPlayerLevel()
@@ -17179,7 +17442,7 @@ function FarmLevel.Start()
 
     State.FarmLevelEnabled = true
 
-    farmLevelThread = task.spawn(function()
+    FarmLevel.Thread = task.spawn(function()
         while State.FarmLevelEnabled do
             task.wait(0.15)
 
@@ -17251,7 +17514,6 @@ function FarmLevel.Stop()
     removeFloat(getRoot())
 end
 
-local farmQuestThread = nil
 
 function FarmQuest.Start()
     if State.FarmQuestEnabled then
@@ -17260,7 +17522,7 @@ function FarmQuest.Start()
 
     State.FarmQuestEnabled = true
 
-    farmQuestThread = task.spawn(function()
+    FarmQuest.Thread = task.spawn(function()
         while State.FarmQuestEnabled do
             task.wait(0.15)
 
@@ -17392,9 +17654,8 @@ function UIController.syncUnlockDropdowns(force)
     end
 end
 
-local statusRefreshThread = nil
 
-local function parseMultiSelection(value)
+function UIController.parseMultiSelection(value)
     local selected = {}
 
     if typeof(value) == "string" then
@@ -17693,7 +17954,7 @@ function UIController.startStatusRefresh()
 
     State.StatusRefreshEnabled = true
 
-    statusRefreshThread = task.spawn(function()
+    UIController.StatusRefreshThread = task.spawn(function()
         local refreshCount = 0
         while State.StatusRefreshEnabled do
             local isWindowOpen = getgenv().HubWindow and getgenv().HubWindow:GetState()
@@ -17705,33 +17966,29 @@ function UIController.startStatusRefresh()
 end
 
 do
-    local username = (localPlayer and localPlayer.Name) or "Default"
-    local configFolder = "LEGACY PIECE/Configs"
+    UIController.Username = (localPlayer and localPlayer.Name) or "Default"
     pcall(function()
-        if makefolder and not isfolder(configFolder) then
-            makefolder(configFolder)
+        if makefolder and not isfolder("LEGACY PIECE/Configs") then
+            makefolder("LEGACY PIECE/Configs")
         end
     end)
-    local cfgPath = configFolder .. "/" .. username .. ".json"
-    local sessPath = configFolder .. "/" .. username .. "_session.json"
+    UIController.Settings = { Path = "LEGACY PIECE/Configs/" .. UIController.Username .. ".json", Values = {}, Elements = {}, Dirty = false }
+    Extras.SessionPath = "LEGACY PIECE/Configs/" .. UIController.Username .. "_session.json"
     pcall(function()
-        if isfile and not isfile(cfgPath) then
+        if isfile and not isfile(UIController.Settings.Path) then
             if isfile("LEGACY PIECE/hub_settings.json") then
                 local oldContent = readfile("LEGACY PIECE/hub_settings.json")
                 if oldContent and #oldContent > 2 then
-                    writefile(cfgPath, oldContent)
+                    writefile(UIController.Settings.Path, oldContent)
                 end
             elseif isfile("LEGACY PIECE/Configs/Default.json") then
                 local defContent = readfile("LEGACY PIECE/Configs/Default.json")
                 if defContent and #defContent > 2 then
-                    writefile(cfgPath, defContent)
+                    writefile(UIController.Settings.Path, defContent)
                 end
             end
         end
     end)
-    UIController.Username = username
-    UIController.Settings = { Path = cfgPath, Values = {}, Elements = {}, Dirty = false }
-    Extras.SessionPath = sessPath
 end
 
 function UIController.recordSetting(kind, name, config, value)
@@ -17883,7 +18140,7 @@ end
 UIController.FastModeActive = false
 UIController.FastModeConn = nil
 
-local function stripTexture(v)
+function UIController.stripTexture(v)
     pcall(function()
         if v:IsA("Decal") or v:IsA("Texture") then
             v.Transparency = 1
@@ -17926,7 +18183,7 @@ local function stripTexture(v)
     end)
 end
 
-local function applyFastMode(enabled)
+function UIController.applyFastMode(enabled)
     UIController.FastModeActive = enabled == true
     if UIController.FastModeConn then
         UIController.FastModeConn:Disconnect()
@@ -17941,7 +18198,7 @@ local function applyFastMode(enabled)
         lightingService.FogEnd = 9e9
         lightingService.ShadowSoftness = 0
         for _, effect in ipairs(lightingService:GetChildren()) do
-            stripTexture(effect)
+            UIController.stripTexture(effect)
         end
     end)
     pcall(function()
@@ -17950,19 +18207,19 @@ local function applyFastMode(enabled)
             pcall(function() terrain.WaterWaveSize = 0 end)
             pcall(function() terrain.WaterWaveSpeed = 0 end)
             for _, c in ipairs(terrain:GetDescendants()) do
-                stripTexture(c)
+                UIController.stripTexture(c)
             end
         end
     end)
     for _, v in ipairs(workspaceService:GetDescendants()) do
-        stripTexture(v)
+        UIController.stripTexture(v)
     end
     if setfpscap then
         pcall(setfpscap, 60)
     end
     UIController.FastModeConn = workspaceService.DescendantAdded:Connect(function(v)
         if UIController.FastModeActive then
-            stripTexture(v)
+            UIController.stripTexture(v)
         end
     end)
 end
@@ -18063,7 +18320,7 @@ function UIController.createMobileToggle()
     button.InputEnded:Connect(finishDrag)
     screenGui.Parent = parent
     UIController.MobileToggleGui = screenGui
-    UIController.applyFastMode = applyFastMode
+    UIController.applyFastMode = UIController.applyFastMode
     if not UIController.MobileToggleConnected then
         UIController.MobileToggleConnected = true
         localPlayer.CharacterAdded:Connect(function()
@@ -18072,6 +18329,27 @@ function UIController.createMobileToggle()
                 UIController.createMobileToggle()
             end
         end)
+    end
+end
+
+function UIController.refreshLoadoutDropdowns()
+    for _, def in ipairs({
+        { Dropdown = UIController.SelectedStyleDropdown, Type = "Style", Current = State.SelectedStyle },
+        { Dropdown = UIController.SelectedWeaponDropdown, Type = "Weapon", Current = State.SelectedWeapon },
+        { Dropdown = UIController.SelectedAbilityDropdown, Type = "Ability", Current = State.SelectedAbility }
+    }) do
+        if def.Dropdown then
+            pcall(function()
+                local options = Extras.getInventoryItemsByType(def.Type)
+                def.Dropdown:ClearOptions()
+                def.Dropdown:InsertOptions(options)
+                local pick = def.Current or "Current"
+                if not table.find(options, pick) then
+                    pick = "Current"
+                end
+                def.Dropdown:UpdateSelection(pick)
+            end)
+        end
     end
 end
 
@@ -18141,12 +18419,54 @@ function UIController.Init()
             if typeof(value) == "string" then
                 State.FarmCombatTypes[value] = not State.FarmCombatTypes[value]
             else
-                local selected = parseMultiSelection(value)
+                local selected = UIController.parseMultiSelection(value)
                 for _, typeName in ipairs(Combat.TypeOrder) do
                     State.FarmCombatTypes[typeName] = selected[typeName] == true
                 end
             end
             Combat.Rotation.SwitchedAt = 0
+        end
+    })
+
+    UIController.SelectedStyleDropdown = leftSection:Dropdown({
+        Name = "Selected Style",
+        Options = Extras.getInventoryItemsByType("Style"),
+        Default = 1,
+        Callback = function(selectedName)
+            if typeof(selectedName) == "string" and selectedName ~= "Current" and selectedName ~= "" then
+                State.SelectedStyle = selectedName
+                equipInventoryItem(selectedName)
+            else
+                State.SelectedStyle = "Current"
+            end
+        end
+    })
+
+    UIController.SelectedWeaponDropdown = leftSection:Dropdown({
+        Name = "Selected Weapon",
+        Options = Extras.getInventoryItemsByType("Weapon"),
+        Default = 1,
+        Callback = function(selectedName)
+            if typeof(selectedName) == "string" and selectedName ~= "Current" and selectedName ~= "" then
+                State.SelectedWeapon = selectedName
+                equipInventoryItem(selectedName)
+            else
+                State.SelectedWeapon = "Current"
+            end
+        end
+    })
+
+    UIController.SelectedAbilityDropdown = leftSection:Dropdown({
+        Name = "Selected Ability",
+        Options = Extras.getInventoryItemsByType("Ability"),
+        Default = 1,
+        Callback = function(selectedName)
+            if typeof(selectedName) == "string" and selectedName ~= "Current" and selectedName ~= "" then
+                State.SelectedAbility = selectedName
+                equipInventoryItem(selectedName)
+            else
+                State.SelectedAbility = "Current"
+            end
         end
     })
 
@@ -18165,7 +18485,7 @@ function UIController.Init()
                     State.FarmSkills[string.upper(value)] = not State.FarmSkills[string.upper(value)]
                     return
                 end
-                local selected = parseMultiSelection(value)
+                local selected = UIController.parseMultiSelection(value)
                 for _, key in ipairs(skillKeyOrder) do
                     State.FarmSkills[key] = selected[key] == true
                 end
@@ -18285,7 +18605,7 @@ function UIController.Init()
                 State.MobFarmSelection[value] = (not State.MobFarmSelection[value]) or nil
                 return
             end
-            State.MobFarmSelection = parseMultiSelection(value)
+            State.MobFarmSelection = UIController.parseMultiSelection(value)
         end
     })
 
@@ -18366,7 +18686,7 @@ function UIController.Init()
                 State.PickupTargets[value] = not State.PickupTargets[value]
                 return
             end
-            local selected = parseMultiSelection(value)
+            local selected = UIController.parseMultiSelection(value)
             for _, itemName in ipairs(AutoPickup.TimedItems) do
                 State.PickupTargets[itemName] = selected[itemName] == true
             end
@@ -18413,7 +18733,7 @@ function UIController.Init()
                     State.ChestSelection[value] = (not State.ChestSelection[value]) or nil
                     return
                 end
-                State.ChestSelection = parseMultiSelection(value)
+                State.ChestSelection = UIController.parseMultiSelection(value)
             end
         })
     end)
@@ -18634,7 +18954,7 @@ function UIController.Init()
                     State.BossSelection[value] = (not State.BossSelection[value]) or nil
                     return
                 end
-                local selected = parseMultiSelection(value)
+                local selected = UIController.parseMultiSelection(value)
                 for _, opt in ipairs(altarBossOptions) do
                     State.BossSelection[opt] = selected[opt] == true or nil
                 end
@@ -18653,7 +18973,7 @@ function UIController.Init()
                     State.BossSelection[value] = (not State.BossSelection[value]) or nil
                     return
                 end
-                local selected = parseMultiSelection(value)
+                local selected = UIController.parseMultiSelection(value)
                 for _, opt in ipairs(quincyStatueOptions) do
                     State.BossSelection[opt] = selected[opt] == true or nil
                 end
@@ -18673,7 +18993,7 @@ function UIController.Init()
                     State.BossSelection[value] = (not State.BossSelection[value]) or nil
                     return
                 end
-                local selected = parseMultiSelection(value)
+                local selected = UIController.parseMultiSelection(value)
                 for _, opt in ipairs(whispererBossOptions) do
                     State.BossSelection[opt] = selected[opt] == true or nil
                 end
@@ -18970,7 +19290,7 @@ function UIController.Init()
                 State.TraitTargets[toggledTrait] = (not State.TraitTargets[toggledTrait]) or nil
                 return
             end
-            local selectedLabels = parseMultiSelection(value)
+            local selectedLabels = UIController.parseMultiSelection(value)
             local newTargets = {}
             for label in pairs(selectedLabels) do
                 newTargets[Extras.TraitByLabel[label] or label] = true
@@ -19115,7 +19435,7 @@ function UIController.Init()
         Name = "Fast Mode / Lag Reducer (Mobile)",
         Default = false,
         Callback = function(value)
-            applyFastMode(value == true)
+            UIController.applyFastMode(value == true)
         end
     })
 
@@ -19236,7 +19556,10 @@ function Extras.saveSession()
         BossSelection = selectionList(State.BossSelection),
         ChestSelection = selectionList(State.ChestSelection),
         CombatTypes = selectionList(Extras.Twoh.SavedCombat and Extras.Twoh.SavedCombat.Types or State.FarmCombatTypes),
-        PickupTargets = selectionList(State.PickupTargets)
+        PickupTargets = selectionList(State.PickupTargets),
+        SelectedStyle = State.SelectedStyle,
+        SelectedWeapon = State.SelectedWeapon,
+        SelectedAbility = State.SelectedAbility
     }
     local encoded = httpService:JSONEncode(payload)
     if encoded == session.LastEncoded and os.clock() - (session.LastWriteAt or 0) < 600 then
@@ -19299,6 +19622,31 @@ function Extras.resumeSession(phase)
     if typeof(saved.BossDifficulty) == "string" then
         State.BossDifficulty = saved.BossDifficulty
     end
+    if typeof(saved.SelectedStyle) == "string" then
+        State.SelectedStyle = saved.SelectedStyle
+        if UIController.SelectedStyleDropdown then
+            pcall(function()
+                UIController.SelectedStyleDropdown:UpdateSelection(saved.SelectedStyle)
+            end)
+        end
+    end
+    if typeof(saved.SelectedWeapon) == "string" then
+        State.SelectedWeapon = saved.SelectedWeapon
+        if UIController.SelectedWeaponDropdown then
+            pcall(function()
+                UIController.SelectedWeaponDropdown:UpdateSelection(saved.SelectedWeapon)
+            end)
+        end
+    end
+    if typeof(saved.SelectedAbility) == "string" then
+        State.SelectedAbility = saved.SelectedAbility
+        if UIController.SelectedAbilityDropdown then
+            pcall(function()
+                UIController.SelectedAbilityDropdown:UpdateSelection(saved.SelectedAbility)
+            end)
+        end
+    end
+    pcall(Extras.enforcePreferredLoadout)
     if typeof(saved.CombatTypes) == "table" and #saved.CombatTypes > 0 then
         State.FarmCombatTypes = {}
         for _, typeName in ipairs(saved.CombatTypes) do
@@ -19748,6 +20096,18 @@ function Extras.watchCharacterRelease()
 end
 
 UIController.Init()
+pcall(function()
+    local dataFolder = localPlayer:FindFirstChild("Data")
+    local invFolder = dataFolder and dataFolder:FindFirstChild("Inventory")
+    if invFolder then
+        invFolder.ChildAdded:Connect(function()
+            task.delay(0.5, UIController.refreshLoadoutDropdowns)
+        end)
+        invFolder.ChildRemoved:Connect(function()
+            task.delay(0.5, UIController.refreshLoadoutDropdowns)
+        end)
+    end
+end)
 Extras.connectAntiAfk()
 Extras.OverHeaven.start()
 Extras.connectItemIndicators()
