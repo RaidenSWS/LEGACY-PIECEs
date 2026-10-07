@@ -17151,7 +17151,35 @@ function UIController.startStatusRefresh()
     end)
 end
 
-UIController.Settings = { Path = "LEGACY PIECE/hub_settings_default.json", Values = {}, Elements = {}, Dirty = false }
+do
+    local username = (localPlayer and localPlayer.Name) or "Default"
+    local configFolder = "LEGACY PIECE/Configs"
+    pcall(function()
+        if makefolder and not isfolder(configFolder) then
+            makefolder(configFolder)
+        end
+    end)
+    local cfgPath = configFolder .. "/" .. username .. ".json"
+    local sessPath = configFolder .. "/" .. username .. "_session.json"
+    pcall(function()
+        if isfile and not isfile(cfgPath) then
+            if isfile("LEGACY PIECE/hub_settings.json") then
+                local oldContent = readfile("LEGACY PIECE/hub_settings.json")
+                if oldContent and #oldContent > 2 then
+                    writefile(cfgPath, oldContent)
+                end
+            elseif isfile("LEGACY PIECE/Configs/Default.json") then
+                local defContent = readfile("LEGACY PIECE/Configs/Default.json")
+                if defContent and #defContent > 2 then
+                    writefile(cfgPath, defContent)
+                end
+            end
+        end
+    end)
+    UIController.Username = username
+    UIController.Settings = { Path = cfgPath, Values = {}, Elements = {}, Dirty = false }
+    Extras.SessionPath = sessPath
+end
 
 function UIController.recordSetting(kind, name, config, value)
     local settings = UIController.Settings
@@ -17299,8 +17327,8 @@ function UIController.startSettingsSaver()
     end)
 end
 
-local fastModeActive = false
-local fastModeConn = nil
+UIController.FastModeActive = false
+UIController.FastModeConn = nil
 
 local function stripTexture(v)
     pcall(function()
@@ -17312,29 +17340,46 @@ local function stripTexture(v)
         elseif v:IsA("MeshPart") then
             v.TextureID = ""
             v.Material = Enum.Material.SmoothPlastic
-            v.CastShadow = false
             v.Reflectance = 0
+            v.CastShadow = false
         elseif v:IsA("SpecialMesh") then
             v.TextureId = ""
         elseif v:IsA("BasePart") then
             v.Material = Enum.Material.SmoothPlastic
-            v.CastShadow = false
             v.Reflectance = 0
-        elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then
+            v.CastShadow = false
+        elseif v:IsA("Shirt") then
+            v.ShirtTemplate = ""
+        elseif v:IsA("Pants") then
+            v.PantsTemplate = ""
+        elseif v:IsA("ShirtGraphic") then
+            v.Graphic = ""
+        elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") or v:IsA("Beam") or v:IsA("Highlight") then
             v.Enabled = false
-        elseif v:IsA("PostProcessEffect") or v:IsA("Atmosphere") or v:IsA("BloomEffect") or v:IsA("DepthOfFieldEffect") or v:IsA("SunRaysEffect") then
+        elseif v:IsA("PostProcessEffect") or v:IsA("Atmosphere") or v:IsA("BloomEffect") or v:IsA("DepthOfFieldEffect") or v:IsA("SunRaysEffect") or v:IsA("ColorCorrectionEffect") or v:IsA("BlurEffect") then
+            v.Enabled = false
+        elseif v:IsA("Sky") then
+            v.SkyboxBk = ""
+            v.SkyboxDn = ""
+            v.SkyboxFt = ""
+            v.SkyboxLf = ""
+            v.SkyboxRt = ""
+            v.SkyboxUp = ""
+            v.SunTextureId = ""
+            v.MoonTextureId = ""
+        elseif v:IsA("Clouds") then
             v.Enabled = false
         end
     end)
 end
 
 local function applyFastMode(enabled)
-    fastModeActive = enabled == true
-    if fastModeConn then
-        fastModeConn:Disconnect()
-        fastModeConn = nil
+    UIController.FastModeActive = enabled == true
+    if UIController.FastModeConn then
+        UIController.FastModeConn:Disconnect()
+        UIController.FastModeConn = nil
     end
-    if not fastModeActive then
+    if not UIController.FastModeActive then
         return
     end
     pcall(function()
@@ -17343,27 +17388,29 @@ local function applyFastMode(enabled)
         lightingService.FogEnd = 9e9
         lightingService.ShadowSoftness = 0
         for _, effect in ipairs(lightingService:GetChildren()) do
-            if effect:IsA("PostProcessEffect") or effect:IsA("Atmosphere") or effect:IsA("BloomEffect") or effect:IsA("DepthOfFieldEffect") or effect:IsA("SunRaysEffect") then
-                effect.Enabled = false
-            end
+            stripTexture(effect)
         end
+    end)
+    pcall(function()
         local terrain = workspaceService:FindFirstChildOfClass("Terrain")
         if terrain then
-            terrain.Decoration = false
-            terrain.WaterWaveSize = 0
-            terrain.WaterWaveSpeed = 0
+            pcall(function() terrain.WaterWaveSize = 0 end)
+            pcall(function() terrain.WaterWaveSpeed = 0 end)
+            for _, c in ipairs(terrain:GetDescendants()) do
+                stripTexture(c)
+            end
         end
-        for _, v in ipairs(workspaceService:GetDescendants()) do
+    end)
+    for _, v in ipairs(workspaceService:GetDescendants()) do
+        stripTexture(v)
+    end
+    if setfpscap then
+        pcall(setfpscap, 60)
+    end
+    UIController.FastModeConn = workspaceService.DescendantAdded:Connect(function(v)
+        if UIController.FastModeActive then
             stripTexture(v)
         end
-        if setfpscap then
-            setfpscap(60)
-        end
-        fastModeConn = workspaceService.DescendantAdded:Connect(function(v)
-            if fastModeActive then
-                stripTexture(v)
-            end
-        end)
     end)
 end
 
@@ -17510,7 +17557,7 @@ function UIController.Init()
 
     local Window = MacLib:Window({
         Title = "Auto Farm Hub",
-        Subtitle = "Universal Edition (Default)",
+        Subtitle = "Universal Edition (" .. tostring(UIController.Username or "Default") .. ")",
         Size = UDim2.fromOffset(800, 500),
         DragStyle = 1
     })
@@ -17788,6 +17835,9 @@ function UIController.Init()
 
     rightSection:Header({ Text = "Auto Open Chests" })
     local chestCatalog = AutoChest.getCatalog()
+    for _, chestName in ipairs(chestCatalog) do
+        State.ChestSelection[chestName] = true
+    end
     local chestDropdownCreated = pcall(function()
         rightSection:Dropdown({
             Name = "Select Chests (Multi-Select)",
@@ -17795,7 +17845,7 @@ function UIController.Init()
             Multi = true,
             Required = false,
             Options = chestCatalog,
-            Default = {},
+            Default = chestCatalog,
             Callback = function(value)
                 if typeof(value) == "string" then
                     State.ChestSelection[value] = (not State.ChestSelection[value]) or nil
@@ -18501,7 +18551,7 @@ getgenv().HubDebug = {
 }
 
 Extras.Session = {
-    Path = "LEGACY PIECE/hub_session_default.json",
+    Path = Extras.SessionPath or "LEGACY PIECE/hub_session.json",
     LogPath = "LEGACY PIECE/LP_disconnects.txt",
     MaxAge = 43200,
     MainPlaceId = 111097829542198,
@@ -19075,8 +19125,13 @@ Extras.OverHeaven.start()
 Extras.connectItemIndicators()
 Extras.watchCoffins()
 Extras.resumeArayaAfterTeleport()
+UIController.Restoring = true
+Extras.resumeSession("values")
+if not UIController.restoreSettings() then
+    Extras.resumeSession("flags")
+end
 UIController.Restoring = false
-UIController.Settings.Dirty = false
+UIController.Settings.Dirty = true
 UIController.startSettingsSaver()
 Extras.watchCharacterRelease()
 Extras.startSessionSaver()
