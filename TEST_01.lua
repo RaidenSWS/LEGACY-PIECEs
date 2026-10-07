@@ -94,6 +94,7 @@ local State = {
     AutoDeepsharkEnabled = false,
     AutoArayaEnabled = false,
     AutoTwohEnabled = false,
+    AutoYhwachEnabled = false,
     AutoDungeonEnabled = false,
     AutoDungeonTarget = "Realm Beyond Heaven (TWOH)",
     AutoBankaiEnabled = false,
@@ -209,9 +210,13 @@ pcall(function()
                 local banked = string.match(State.LastNotifyText, "Quincy Soldiers banked:%s*(%d+)")
                 if banked then
                     State.QuincyBanked = tonumber(banked)
+                    State.QuincyBankedAt = os.clock()
                 end
                 if string.find(State.LastNotifyText, "Only a Quincy", 1, true) then
                     State.QuincyBlockedAt = os.clock()
+                end
+                if string.find(State.LastNotifyText, "maximum number of bosses", 1, true) then
+                    State.BossCapAt = os.clock()
                 end
             end
         end)
@@ -239,6 +244,10 @@ local Combat = {
     NextEquipAt = 0,
     AimRoot = nil,
     AimUntil = 0,
+    AimOverride = nil,
+    HoverOverride = nil,
+    HoverCastRange = nil,
+    OverrideUntil = 0,
     AimCalls = 0,
     ActingSince = nil,
     QueuedWhileActing = false,
@@ -363,11 +372,11 @@ for _, group in ipairs(bossCatalogGroups) do
 end
 
 local function isFarmActive()
-    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or pickupActive or prestigeActive or debugActive or (State.AutoWhaleEnabled and Extras.WhaleActive == true) or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or (State.AutoDeepsharkEnabled and movementOwner == "deepshark") or State.AutoArayaEnabled or State.AutoTwohEnabled or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or (State.AutoFishEnabled and movementOwner == "fishing")
+    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or pickupActive or prestigeActive or debugActive or (State.AutoWhaleEnabled and Extras.WhaleActive == true) or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or (State.AutoDeepsharkEnabled and movementOwner == "deepshark") or State.AutoArayaEnabled or State.AutoTwohEnabled or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or State.AutoYhwachEnabled or (State.AutoFishEnabled and movementOwner == "fishing")
 end
 
 function Extras.otherFarmActive()
-    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or State.AutoArayaEnabled or (State.AutoTwohEnabled and not (Extras.Twoh and Extras.Twoh.Idle)) or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or false
+    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or State.AutoArayaEnabled or (State.AutoTwohEnabled and not (Extras.Twoh and Extras.Twoh.Idle)) or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or (State.AutoYhwachEnabled and not (Extras.Yhwach and Extras.Yhwach.Idle)) or false
 end
 
 local movementOwnerActiveCheck = {
@@ -419,6 +428,9 @@ local movementOwnerActiveCheck = {
     twoh = function()
         return State.AutoTwohEnabled or (Extras.Twoh ~= nil and Extras.Twoh.isActive())
     end,
+    yhwach = function()
+        return State.AutoYhwachEnabled
+    end,
     bankai = function()
         return State.AutoBankaiEnabled
     end,
@@ -443,6 +455,10 @@ local function acquireMovement(ownerName)
 
     local eventPriority = Extras.PriorityRequest
     if eventPriority == "twoh" and not (State.AutoTwohEnabled or (Extras.Twoh ~= nil and Extras.Twoh.isActive())) then
+        Extras.PriorityRequest = nil
+        eventPriority = nil
+    end
+    if eventPriority == "yhwach" and not State.AutoYhwachEnabled then
         Extras.PriorityRequest = nil
         eventPriority = nil
     end
@@ -502,6 +518,8 @@ local function setFarmStatus(message)
         State.ExtraStatus = "Solemn Lament: " .. tostring(message)
     elseif movementOwner == "twoh" then
         Extras.Twoh.status(message)
+    elseif movementOwner == "yhwach" then
+        Extras.Yhwach.FarmNote = tostring(message)
     elseif movementOwner == "whale" or movementOwner == "coffin" or movementOwner == "ambush" or movementOwner == "ambushonly" or movementOwner == "deepshark" or movementOwner == "araya" or movementOwner == "fireforce" then
         State.ExtraStatus = message
     elseif State.BossFarmEnabled then
@@ -745,6 +763,7 @@ end
 
 local function buildQuestAnchors()
     for questName, questInfo in pairs(questData.Main) do
+        local isGrind = string.find(questName, "^Quest%s") ~= nil and typeof(questInfo.LevelRanging) == "table"
         local goalTarget = questInfo.Goal and questInfo.Goal.Target
         local targets = {}
 
@@ -760,8 +779,12 @@ local function buildQuestAnchors()
 
         for _, target in ipairs(targets) do
             local key = normalizeName(stripBossTag(target))
-            if key ~= "" and not questAnchorByMob[key] then
-                questAnchorByMob[key] = questName
+            if key ~= "" then
+                local currentQuest = questAnchorByMob[key]
+                local currentIsGrind = currentQuest and (string.find(currentQuest, "^Quest%s") ~= nil and typeof(questData.Main[currentQuest]) == "table" and typeof(questData.Main[currentQuest].LevelRanging) == "table")
+                if not currentQuest or (isGrind and not currentIsGrind) then
+                    questAnchorByMob[key] = questName
+                end
             end
         end
     end
@@ -817,6 +840,20 @@ if unlockRecipes["The World"] and unlockRecipes["Blood-Stained Stand Arrow"] the
     unlockRecipes["The World"].FightBoss = "Shadow Dio"
     unlockRecipes["Blood-Stained Stand Arrow"].Money = 25000000
 end
+
+if unlockRecipes["Tatsumaki"] then
+    unlockRecipes["Tatsumaki"].Money = 500000
+    unlockRecipes["Tatsumaki"].NPC = "Tatsumaki"
+    unlockRecipes["Tatsumaki"].Island = "Legacy Island"
+end
+if unlockRecipes["Storm Esper"] then
+    unlockRecipes["Storm Esper"].Money = 500000
+    unlockRecipes["Storm Esper"].NPC = "Tatsumaki"
+    unlockRecipes["Storm Esper"].Island = "Legacy Island"
+end
+materialSources["Meteor Fragment"] = {
+    { Name = "Meteor Shower", Event = true, Island = "Legacy Island" }
+}
 
 local islandSpotByNpc = {}
 local islandSpotList = {}
@@ -921,7 +958,13 @@ local function setTargetBox(adornee)
     end
 end
 
+local lastNoClipCheck = 0
 local noClipConnection = runService.Stepped:Connect(function()
+    local now = os.clock()
+    if now - lastNoClipCheck < 0.1 then
+        return
+    end
+    lastNoClipCheck = now
     local playerCharacter = localPlayer.Character
     if playerCharacter and isFarmActive() and not Extras.Walking then
         for _, part in ipairs(playerCharacter:GetChildren()) do
@@ -1477,6 +1520,9 @@ local lockConnection = runService.Heartbeat:Connect(function(deltaTime)
     local desiredCFrame = nil
     if lockedEnemyRoot and lockedEnemyRoot.Parent then
         desiredCFrame = getFarmCFrame(lockedEnemyRoot)
+        if Combat.HoverOverride and os.clock() < Combat.OverrideUntil then
+            desiredCFrame = Combat.HoverOverride
+        end
     elseif lockedTargetCFrame then
         desiredCFrame = lockedTargetCFrame
     end
@@ -1696,6 +1742,12 @@ getgenv().HubCleanup = function()
     end
     getgenv().HubPrestigeConnections = {}
     pcall(Combat.removeAimHook)
+    pcall(function()
+        if Extras.Yhwach then
+            Extras.Yhwach.releaseAll()
+            Extras.Yhwach.save()
+        end
+    end)
     pcall(Extras.stopAll)
     if getgenv().HubDungeonConnection then
         pcall(function()
@@ -3401,6 +3453,9 @@ function Combat.removeAimHook()
 end
 
 function Combat.aimPoint(enemyRoot)
+    if Combat.AimOverride and os.clock() < Combat.OverrideUntil then
+        return Combat.AimOverride
+    end
     if not State.FarmDistanceOverride then
         return enemyRoot.Position
     end
@@ -3706,6 +3761,9 @@ function Combat.tick()
     if enemyDistance > Combat.SkillRange then
         return
     end
+    if Combat.HoverOverride and Combat.HoverCastRange and os.clock() < Combat.OverrideUntil and (Combat.HoverOverride.Position - rootPart.Position).Magnitude > Combat.HoverCastRange then
+        return
+    end
 
     local character = localPlayer.Character
     if character:FindFirstChild("Stunned") then
@@ -3907,7 +3965,7 @@ State.CombatToken = {}
 task.spawn(function()
     local combatToken = State.CombatToken
     while State.CombatToken == combatToken do
-        task.wait(0.05)
+        task.wait(isFarmActive() and 0.05 or 0.25)
         pcall(Combat.tick)
         pcall(BossFarm.scanSoldierKills)
         pcall(Extras.recordMobSpawns)
@@ -4438,7 +4496,7 @@ function Extras.checkStuck()
     local rootPart, playerHumanoid = getRoot()
     local target = Extras.getFightTarget()
     local excused = not rootPart or not playerHumanoid or playerHumanoid.Health <= 0 or not target
-        or pickupActive or (Extras.PriorityRequest ~= nil and Extras.PriorityRequest ~= "twoh") or Extras.isMovementBlocked()
+        or pickupActive or (Extras.PriorityRequest ~= nil and Extras.PriorityRequest ~= "twoh" and Extras.PriorityRequest ~= "yhwach") or Extras.isMovementBlocked()
         or Extras.isCarryingCoffin() or not isFarmActive()
     if excused or (rootPart.Position - target.Position).Magnitude <= 45 or (rootPart.Position - target.Position).Magnitude > 1000 then
         watch.Position = rootPart and rootPart.Position
@@ -4811,14 +4869,14 @@ Extras.Threads = {}
 Extras.CoffinCandidates = {}
 Extras.TraitByLabel = {}
 Extras.DungeonFolder = "LEGACY PIECE"
-Extras.DungeonSettingsPath = "LEGACY PIECE/dungeon_settings_default.json"
-Extras.DungeonHelperPath = "LEGACY PIECE/dungeon_helper_default.luau"
+Extras.DungeonSettingsPath = "LEGACY PIECE/dungeon_settings.json"
+Extras.DungeonHelperPath = "LEGACY PIECE/dungeon_helper.luau"
 Extras.DungeonDifficulties = { "Easy", "Medium", "Hard", "Extreme" }
 Extras.DungeonHelperSource = [==[
 local replicatedStorage = game:GetService("ReplicatedStorage")
 local httpService = game:GetService("HttpService")
-local settingsPath = "LEGACY PIECE/dungeon_settings_default.json"
-local helperLoader = 'loadstring(readfile("LEGACY PIECE/dungeon_helper_default.luau"))()'
+local settingsPath = "LEGACY PIECE/dungeon_settings.json"
+local helperLoader = 'loadstring(readfile("LEGACY PIECE/dungeon_helper.luau"))()'
 
 local function readSettings()
     local ok, decoded = pcall(function()
@@ -5986,7 +6044,7 @@ Extras.Araya = {
     DungeonPlaceId = 105440532661931,
     EstateName = "Abandoned Spider Estate",
     BossName = "The Dihui Star, Araya",
-    SettingsPath = "LEGACY PIECE/araya_settings_default.json",
+    SettingsPath = "LEGACY PIECE/araya_settings.json",
     Difficulty = "Easy",
     MoneyCost = 75000000,
     ShardCost = 500000,
@@ -5998,7 +6056,7 @@ Extras.Araya = {
         { "Time Safe Core", 15 }
     },
     TitleName = "The Pinky Nursefather",
-    HubLoader = 'if getgenv().HubAutoLoaded then return end getgenv().HubAutoLoaded = true if not game:IsLoaded() then game.Loaded:Wait() end local players = game:GetService("Players") while not players.LocalPlayer do task.wait() end players.LocalPlayer:WaitForChild("Data", 60) task.wait(2) getgenv().HubDefaultResume = true loadstring(readfile("LEGACY PIECE/legacy_piece_default.luau"))()'
+    HubLoader = 'if getgenv().HubAutoLoaded then return end getgenv().HubAutoLoaded = true if not game:IsLoaded() then game.Loaded:Wait() end local players = game:GetService("Players") while not players.LocalPlayer do task.wait() end players.LocalPlayer:WaitForChild("Data", 60) task.wait(2) loadstring(readfile("LEGACY PIECE/legacy_piece.luau"))()'
 }
 
 Extras.Araya.MaxTimeSafeLosses = math.huge
@@ -6652,12 +6710,53 @@ function Extras.pickDungeonTarget(rootPart)
     return bestEnemy
 end
 
+function Extras.solveDungeonSeal(prompt, dungeonName)
+    local twoh = Extras.Twoh
+    if twoh and twoh.hasWorld and twoh.hasWorld() then
+        twoh.stillSeal(prompt)
+        return
+    end
+    local holder = prompt.Parent
+    local part = holder and (holder:IsA("BasePart") and holder or prompt:FindFirstAncestorWhichIsA("BasePart"))
+    if not part then
+        task.wait(0.2)
+        return
+    end
+    local sealName = holder.Parent and holder.Parent.Name or "?"
+    local standCFrame = CFrame.new(part.Position + Vector3.new(0, 4, 3))
+    local rootPart = getRoot()
+    if not rootPart then
+        task.wait(0.2)
+        return
+    end
+    local distance = (rootPart.Position - part.Position).Magnitude
+    if distance > 7 then
+        Extras.clearCombatLocks()
+        Extras.dungeonStatus(string.format("[%s] moving to Chrono Seal %s", tostring(dungeonName), sealName))
+        safeTravelTo(standCFrame, function()
+            return (State.AutoDungeonEnabled or State.PrestigeEnabled) and prompt.Enabled
+        end)
+    end
+    lockedEnemyRoot = nil
+    lockedTargetCFrame = standCFrame
+    Extras.dungeonStatus(string.format("[%s] activating Chrono Seal %s", tostring(dungeonName), sealName))
+    triggerPrompt(prompt)
+    task.wait(0.6)
+    lockedTargetCFrame = nil
+end
+
 function Extras.runDungeonInside(dungeonName)
     Extras.connectAutoDungeon()
     pcall(Extras.queueArayaReload)
     if not acquireMovement("dungeon") then
         Extras.dungeonStatus("waiting for " .. tostring(movementOwner) .. " to finish")
         task.wait(1)
+        return
+    end
+    local sealPrompt = Extras.Twoh and Extras.Twoh.findSealPrompt()
+    if sealPrompt and not (Extras.Twoh and Extras.Twoh.anyLivingEnemy()) then
+        Extras.solveDungeonSeal(sealPrompt, dungeonName)
+        releaseMovement("dungeon")
         return
     end
     local waveText = string.format("wave %s/%s", tostring(Extras.DungeonWave or "?"), tostring(Extras.DungeonMaxWave or "?"))
@@ -8647,6 +8746,1753 @@ function Extras.Twoh.prestigeUnlockKeys()
         return
     end
     twoh.runQuestStage(stage, questName, index)
+end
+
+Extras.Yhwach = {
+    NPCName = "Quincy Herald",
+    NPCPosition = Vector3.new(2739, 22, -5141),
+    StyleName = "Yhwach",
+    KingName = "Yhwach Not Dungeon",
+    TitleName = "The Quincy King",
+    PityAttribute = "TitlePity_Yhwach_Not_Dungeon",
+    TitlePity = 35,
+    Letters = "Letters of the King",
+    Successor = "Successor of the Quincy King",
+    Audience = "Audience with the King",
+    InheritBuy = "InheritQuincyKing",
+    ReishiItem = "Reishi Fragment",
+    SoulItem = "Quincy King's Soul",
+    SoldierName = "Quincy Soldier",
+    SoldierSpot = Vector3.new(2980, 32, -5420),
+    KingSpot = Vector3.new(2797.5, 22, -5732.4),
+    NoKingLimit = 4,
+    DeathLoopCount = 4,
+    DeathLoopWindow = 600,
+    DeathLoopPause = 300,
+    RefusedBackoff = 30,
+    StallLimit = 180,
+    ErrorStreakLimit = 20,
+    ErrorPause = 60,
+    SummonReishi = 20,
+    SummonKills = 50,
+    CraftReishi = 200,
+    BaseSchriftTarget = 2,
+    AcceptGrace = 8,
+    MoneyMargin = 20000000,
+    MoneyPhaseCap = 1200,
+    KingWait = 45,
+    FightTimeout = 900,
+    SoldierBurst = 30,
+    ReturnRange = 250,
+    BatchSize = 5,
+    BossArea = Vector3.new(2358, 22, -5495),
+    SummonLostAfter = 20,
+    ClusterFarm = true,
+    ClusterRadius = 40,
+    ClusterTravel = 120,
+    ClusterSwitchMargin = 1.5,
+    ClusterAim = true,
+    ClusterCastRange = 20,
+    CapBackoff = 20,
+    BankMargin = 2,
+    MaxAliveDefault = 3,
+    MaxAliveRetry = 600,
+    PullCooldown = 60,
+    PullHold = 1.5,
+    StatePath = "LEGACY PIECE/yhwach_state.json",
+    LogPath = "LEGACY PIECE/yhwach_log.txt",
+    Route = { "As Nodt", "Jugram Haschwalth", "Bambietta Basterbine", "Askin Nakk Le Vaar", "Gremmy Thoumeaux" },
+    Statues = {
+        ["As Nodt"] = { Short = "F", Material = "Fear Thorn", Schrift = "Schrift of Fear", Choice = "the fear", Position = Vector3.new(2989.6, 22, -5092.6) },
+        ["Askin Nakk Le Vaar"] = { Short = "D", Material = "Lethal Essence", Schrift = "Schrift of Deathdealing", Choice = "the deathdealing", Position = Vector3.new(2591.1, 25, -5648.4) },
+        ["Bambietta Basterbine"] = { Short = "E", Material = "Explosive Reishi Core", Schrift = "Schrift of Explode", Choice = "the explode", Position = Vector3.new(3006.1, 25.4, -5680.6) },
+        ["Gremmy Thoumeaux"] = { Short = "V", Material = "Visionary Fragment", Schrift = "Schrift of Visionary", Choice = "the visionary", Position = Vector3.new(2593.4, 23.4, -5315.7) },
+        ["Jugram Haschwalth"] = { Short = "B", Material = "Balance Fragment", Schrift = "Schrift of Balance", Choice = "the balance", Position = Vector3.new(3101.4, 24.4, -5320.3) }
+    },
+    KingDrops = {
+        { Item = "Quincy King's Soul", Label = "Soul", Chance = 0.3 },
+        { Item = "Wandenreich Sigil", Label = "Sigil", Chance = 0.5 },
+        { Item = "Sovereign's Crown Shard", Label = "Crown", Chance = 0.3 },
+        { Item = "Emperor's Reishi Heart", Label = "Heart", Chance = 0.2 }
+    },
+    BusyUntil = {},
+    GoneSince = {},
+    GraceSeen = {},
+    Fails = 0,
+    Deaths = 0,
+    Idle = false,
+    StatusText = "Idle",
+    Detail = "",
+    EtaText = ""
+}
+
+function Extras.Yhwach.status(message)
+    Extras.Yhwach.StatusText = tostring(message)
+    State.ExtraStatus = "Yhwach: " .. tostring(message)
+end
+
+function Extras.Yhwach.isActive()
+    return State.AutoYhwachEnabled == true
+end
+
+function Extras.Yhwach.data()
+    local yh = Extras.Yhwach
+    if not yh.Data then
+        local saved = {}
+        pcall(function()
+            local decoded = httpService:JSONDecode(readfile(yh.StatePath))
+            if typeof(decoded) == "table" then
+                saved = decoded
+            end
+        end)
+        if typeof(saved.Stats) ~= "table" then
+            saved.Stats = {}
+        end
+        if typeof(saved.SetKills) ~= "table" or saved.JobId ~= game.JobId then
+            saved.SetKills = {}
+            saved.Summoned = {}
+            saved.MaxAlive = nil
+            saved.MaxAliveAt = nil
+            saved.Bank = nil
+            saved.BankKnown = false
+            saved.KingFullSet = nil
+        end
+        if typeof(saved.Summoned) ~= "table" then
+            saved.Summoned = {}
+        end
+        saved.JobId = game.JobId
+        yh.Data = saved
+    end
+    return yh.Data
+end
+
+function Extras.Yhwach.save()
+    local yh = Extras.Yhwach
+    pcall(function()
+        writefile(yh.StatePath, httpService:JSONEncode(yh.data()))
+    end)
+end
+
+function Extras.Yhwach.log(text)
+    local yh = Extras.Yhwach
+    local line = os.date("%H:%M:%S") .. " " .. tostring(text) .. "\n"
+    local ok = pcall(appendfile, yh.LogPath, line)
+    if not ok then
+        local checked, exists = pcall(isfile, yh.LogPath)
+        if checked and exists == false then
+            pcall(writefile, yh.LogPath, line)
+        end
+    end
+end
+
+function Extras.Yhwach.stat(key, amount)
+    local stats = Extras.Yhwach.data().Stats
+    stats[key] = (tonumber(stats[key]) or 0) + (amount or 1)
+end
+
+function Extras.Yhwach.ownsStyle()
+    local dataFolder = localPlayer:FindFirstChild("Data")
+    local inventoryFolder = dataFolder and dataFolder:FindFirstChild("Inventory")
+    return inventoryFolder ~= nil and inventoryFolder:FindFirstChild(Extras.Yhwach.StyleName) ~= nil
+end
+
+function Extras.Yhwach.getRace()
+    local dataFolder = localPlayer:FindFirstChild("Data")
+    local raceValue = dataFolder and dataFolder:FindFirstChild("Race")
+    return raceValue and raceValue.Value or ""
+end
+
+function Extras.Yhwach.decode(questName)
+    local info = questData.Main[questName]
+    local objectives = typeof(info) == "table" and typeof(info.Objectives) == "table" and info.Objectives or {}
+    local progress = tonumber(Extras.getQuestProgress(questName)) or 0
+    local list = {}
+    for index = 1, #objectives do
+        local objective = objectives[index]
+        local have = math.floor(progress / (1000 ^ (index - 1))) % 1000
+        list[index] = { Target = objective.Target, Type = objective.Type, Have = have, Need = tonumber(objective.Amount) or 1 }
+    end
+    return list
+end
+
+function Extras.Yhwach.audienceGoals()
+    local info = questData.Main[Extras.Yhwach.Audience]
+    local goals = {}
+    for _, objective in ipairs(typeof(info) == "table" and info.Objectives or {}) do
+        goals[objective.Target] = tonumber(objective.Amount) or 1
+    end
+    return goals
+end
+
+function Extras.Yhwach.getCounts()
+    local yh = Extras.Yhwach
+    local counts = { Reishi = getInventoryAmount(yh.ReishiItem), Soul = getInventoryAmount(yh.SoulItem), Money = getMoney(), Shards = getShards(), Mat = {}, Schrift = {}, Drop = {} }
+    for _, drop in ipairs(yh.KingDrops) do
+        counts.Drop[drop.Item] = getInventoryAmount(drop.Item)
+    end
+    for name, info in pairs(yh.Statues) do
+        counts.Mat[name] = getInventoryAmount(info.Material)
+        counts.Schrift[name] = getInventoryAmount(info.Schrift)
+    end
+    return counts
+end
+
+function Extras.Yhwach.schriftTarget()
+    return Extras.Yhwach.BaseSchriftTarget
+end
+
+function Extras.Yhwach.getNeeds(counts, stage)
+    local yh = Extras.Yhwach
+    local audienceDone = UnlockFarm.isQuestCompleted(yh.Audience)
+    local target = yh.schriftTarget()
+    local needs = { Mat = {}, Letters = {}, Drop = {}, CraftsLeft = 0, MatMax = 0, Title = false, KingKill = false, King = false }
+    for name, info in pairs(yh.Statues) do
+        local craftsLeft = audienceDone and 0 or math.max(0, target - counts.Schrift[name])
+        needs.CraftsLeft = needs.CraftsLeft + craftsLeft
+        needs.Mat[name] = math.max(0, craftsLeft * 5 - counts.Mat[name])
+        needs.MatMax = math.max(needs.MatMax, needs.Mat[name])
+    end
+    if stage == "letters" then
+        for _, objective in ipairs(yh.decode(yh.Letters)) do
+            if objective.Have < objective.Need then
+                needs.Letters[objective.Target] = true
+            end
+        end
+    end
+    if not audienceDone then
+        local goals = yh.audienceGoals()
+        for _, drop in ipairs(yh.KingDrops) do
+            local goal = goals[drop.Item] or 0
+            if drop.Item == yh.SoulItem then
+                goal = goal + needs.CraftsLeft
+            end
+            needs.Drop[drop.Item] = math.max(0, goal - counts.Drop[drop.Item])
+            if needs.Drop[drop.Item] > 0 then
+                needs.King = true
+            end
+        end
+        needs.Title = not Extras.hasTitle(yh.TitleName)
+        needs.KingKill = true
+        if UnlockFarm.getActiveQuestFolder(yh.Audience) then
+            local first = yh.decode(yh.Audience)[1]
+            needs.KingKill = first == nil or first.Have < first.Need
+        end
+        needs.King = needs.King or needs.Title or needs.KingKill
+    end
+    return needs
+end
+
+function Extras.Yhwach.getStage()
+    local yh = Extras.Yhwach
+    if yh.ownsStyle() then
+        return "done"
+    end
+    if yh.getRace() ~= "Quincy" then
+        return "needsQuincy"
+    end
+    if not UnlockFarm.isQuestCompleted(yh.Letters) then
+        if not UnlockFarm.getActiveQuestFolder(yh.Letters) then
+            return "acceptLetters"
+        end
+        if UnlockFarm.isQuestReadyToClaim(yh.Letters) then
+            return "claimLetters"
+        end
+        return "letters"
+    end
+    if not UnlockFarm.isQuestCompleted(yh.Successor) then
+        if not UnlockFarm.getActiveQuestFolder(yh.Successor) then
+            return "waitSuccessor"
+        end
+        if UnlockFarm.isQuestReadyToClaim(yh.Successor) then
+            return "claimSuccessor"
+        end
+        return "successor"
+    end
+    if not UnlockFarm.isQuestCompleted(yh.Audience) then
+        if not UnlockFarm.getActiveQuestFolder(yh.Audience) then
+            return "acceptAudience"
+        end
+        if UnlockFarm.isQuestReadyToClaim(yh.Audience) and yh.getNeeds(yh.getCounts(), "audience").CraftsLeft == 0 then
+            return "claimAudience"
+        end
+        return "audience"
+    end
+    return "inherit"
+end
+
+function Extras.Yhwach.bank()
+    return tonumber(Extras.Yhwach.data().Bank) or 0
+end
+
+function Extras.Yhwach.syncBank()
+    local yh = Extras.Yhwach
+    local data = yh.data()
+    local kills = BossFarm.Quincy.Kills
+    local delta = kills - (yh.LastSoldierKills or kills)
+    if delta > 0 then
+        data.Bank = yh.bank() + delta
+    end
+    yh.LastSoldierKills = kills
+    if State.QuincyBanked ~= nil and (State.QuincyBankedAt or 0) > (yh.BankNotifyAt or 0) then
+        yh.BankNotifyAt = State.QuincyBankedAt
+        data.Bank = State.QuincyBanked
+        data.BankKnown = true
+        yh.log("BANK notify " .. tostring(State.QuincyBanked))
+    end
+end
+
+function Extras.Yhwach.trackDeaths()
+    local yh = Extras.Yhwach
+    local character = localPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if humanoid and humanoid.Health <= 0 and yh.DeadCharacter ~= character then
+        yh.DeadCharacter = character
+        yh.Deaths = yh.Deaths + 1
+        yh.stat("Deaths")
+        yh.DeathTimes = yh.DeathTimes or {}
+        table.insert(yh.DeathTimes, os.clock())
+        yh.log("DEATH")
+    end
+end
+
+function Extras.Yhwach.recentDeaths()
+    local yh = Extras.Yhwach
+    local now = os.clock()
+    local kept = {}
+    for _, at in ipairs(yh.DeathTimes or {}) do
+        if now - at < yh.DeathLoopWindow then
+            table.insert(kept, at)
+        end
+    end
+    yh.DeathTimes = kept
+    return #kept
+end
+
+function Extras.Yhwach.findKing()
+    local wanted = normalizeName(Extras.Yhwach.KingName)
+    for _, enemy in ipairs(enemiesFolder:GetChildren()) do
+        if normalizeName(stripBossTag(enemy.Name)) == wanted then
+            local humanoid = enemy:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 and enemy:FindFirstChild("HumanoidRootPart") then
+                return enemy
+            end
+        end
+    end
+    return nil
+end
+
+function Extras.Yhwach.findBoss(name)
+    local rootPart = getRoot()
+    return getTargetEnemy(name, rootPart and rootPart.Position or Vector3.zero, true)
+end
+
+function Extras.Yhwach.getStatuePrompt(name)
+    local islandsFolder = workspaceService:FindFirstChild("Islands")
+    local islandList = islandsFolder and islandsFolder:FindFirstChild("Islands")
+    local castle = islandList and islandList:FindFirstChild("Quincy Castle")
+    local statue = castle and castle:FindFirstChild(name)
+    local part = statue and statue:FindFirstChild("Part")
+    return part, part and part:FindFirstChild("SummonPrompt")
+end
+
+function Extras.Yhwach.getRequirement(buyName)
+    local entry = dialogueData[Extras.Yhwach.NPCName]
+    for _, key in ipairs({ "Choice", "PostQuestChoice" }) do
+        local pages = typeof(entry) == "table" and entry[key]
+        if typeof(pages) == "table" then
+            for _, page in pairs(pages) do
+                if typeof(page) == "table" then
+                    for _, choice in pairs(page) do
+                        local info = typeof(choice) == "table" and choice[3]
+                        if typeof(info) == "table" and info.Buy == buyName then
+                            local list = {}
+                            for _, requirement in ipairs(typeof(info.Requirement) == "table" and info.Requirement or {}) do
+                                table.insert(list, { Item = requirement[1], Amount = tonumber(requirement[2]) or 0 })
+                            end
+                            return list
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+function Extras.Yhwach.missing(requirement)
+    local parts = {}
+    for _, entry in ipairs(requirement or {}) do
+        local have = getInventoryAmount(entry.Item)
+        if have < entry.Amount then
+            table.insert(parts, string.format("%s %d/%d", entry.Item, have, entry.Amount))
+        end
+    end
+    if #parts == 0 then
+        return nil
+    end
+    return table.concat(parts, ", ")
+end
+
+function Extras.Yhwach.snapshot()
+    local yh = Extras.Yhwach
+    local counts = yh.getCounts()
+    local parts = { string.format("Reishi %d Soul %d $%.1fM shards %d", counts.Reishi, counts.Soul, counts.Money / 1000000, counts.Shards) }
+    for _, name in ipairs(yh.Route) do
+        local info = yh.Statues[name]
+        table.insert(parts, string.format("%s mat %d sch %d", info.Short, counts.Mat[name], counts.Schrift[name]))
+    end
+    for _, drop in ipairs(yh.KingDrops) do
+        table.insert(parts, drop.Label .. " " .. tostring(counts.Drop[drop.Item]))
+    end
+    return table.concat(parts, " | ")
+end
+
+function Extras.Yhwach.setCount()
+    local count = 0
+    for _ in pairs(Extras.Yhwach.data().SetKills) do
+        count = count + 1
+    end
+    return count
+end
+
+function Extras.Yhwach.summary(counts, needs)
+    local yh = Extras.Yhwach
+    local data = yh.data()
+    local goals = yh.audienceGoals()
+    local schrift, mats = {}, {}
+    for _, name in ipairs(yh.Route) do
+        local info = yh.Statues[name]
+        table.insert(schrift, info.Short .. tostring(counts.Schrift[name]))
+        table.insert(mats, tostring(counts.Mat[name]))
+    end
+    local dropParts = {}
+    for _, drop in ipairs(yh.KingDrops) do
+        local goal = goals[drop.Item] or 0
+        if drop.Item == yh.SoulItem then
+            goal = goal + needs.CraftsLeft
+        end
+        table.insert(dropParts, string.format("%s %d/%d", drop.Label, counts.Drop[drop.Item], goal))
+    end
+    return string.format("set %d/5 | sets %d King %d | Reishi %d bank %d | %s | pity %s/%d | Schrift %s (x%d) | mats %s", yh.setCount(), tonumber(data.Sets) or 0, tonumber(data.KingKills) or 0, counts.Reishi, yh.bank(), table.concat(dropParts, " "), tostring(localPlayer:GetAttribute(yh.PityAttribute) or 0), yh.TitlePity, table.concat(schrift, " "), yh.schriftTarget(), table.concat(mats, "/"))
+end
+
+function Extras.Yhwach.estimate(counts, needs)
+    local yh = Extras.Yhwach
+    local stats = yh.data().Stats
+    local pity = tonumber(localPlayer:GetAttribute(yh.PityAttribute)) or 0
+    local setsLeft = needs.MatMax
+    for _, drop in ipairs(yh.KingDrops) do
+        setsLeft = math.max(setsLeft, (needs.Drop[drop.Item] or 0) / drop.Chance)
+    end
+    if needs.Title then
+        setsLeft = math.max(setsLeft, math.max(1, yh.TitlePity - pity))
+    end
+    if needs.KingKill then
+        setsLeft = math.max(setsLeft, 1)
+    end
+    setsLeft = math.ceil(setsLeft)
+    local farmSeconds = tonumber(stats.FarmSeconds) or 0
+    local farmKills = tonumber(stats.FarmKills) or 0
+    local statueFights = tonumber(stats.StatueFights) or 0
+    if farmSeconds < 60 or farmKills < 20 or statueFights < 1 then
+        yh.EtaText = string.format("ETA: ~%d sets left | measuring rates (soldiers %ds/%d kills, statues %d)", setsLeft, math.floor(farmSeconds), farmKills, statueFights)
+        return
+    end
+    local killRate = farmKills / farmSeconds
+    local reishiPerKill = (tonumber(stats.FarmReishi) or 0) / farmKills
+    local statueSeconds = (tonumber(stats.StatueSeconds) or 0) / statueFights
+    local statueReishi = (tonumber(stats.StatueReishi) or 0) / statueFights
+    local kingFights = tonumber(stats.KingFights) or 0
+    local kingSeconds = kingFights > 0 and (tonumber(stats.KingSeconds) or 0) / kingFights or statueSeconds * 3
+    local kingReishi = kingFights > 0 and (tonumber(stats.KingReishi) or 0) / kingFights or 7.5
+    local setSeconds = 5 * (statueSeconds + 25 + yh.SummonKills / killRate) + kingSeconds + 20
+    local reishiNeed = setsLeft * (5 * yh.SummonReishi - 5 * statueReishi - kingReishi - 5 * yh.SummonKills * reishiPerKill) + needs.CraftsLeft * yh.CraftReishi - counts.Reishi
+    local extraSeconds = reishiPerKill > 0 and math.max(0, reishiNeed) / (reishiPerKill * killRate) or 0
+    local recent = yh.data().RecentSets
+    if typeof(recent) == "table" and #recent > 0 then
+        local sorted = {}
+        for _, seconds in ipairs(recent) do
+            table.insert(sorted, tonumber(seconds) or 0)
+        end
+        table.sort(sorted)
+        local middle = math.floor((#sorted + 1) / 2)
+        setSeconds = #sorted % 2 == 1 and sorted[middle] or (sorted[middle] + sorted[middle + 1]) / 2
+        reishiNeed = needs.CraftsLeft * yh.CraftReishi - counts.Reishi
+        extraSeconds = reishiPerKill > 0 and math.max(0, reishiNeed) / (reishiPerKill * killRate) or 0
+    end
+    local total = setsLeft * setSeconds + extraSeconds
+    yh.EtaText = string.format("ETA: %.1fh | %d sets x %.1fmin + %.1fh extra soldiers for %d Reishi | soldiers %.1f/min, %.3f Reishi/kill | statue %.0fs, King %.0fs", total / 3600, setsLeft, setSeconds / 60, extraSeconds / 3600, math.max(0, math.floor(reishiNeed)), killRate * 60, reishiPerKill, statueSeconds, kingSeconds)
+end
+
+function Extras.Yhwach.claim()
+    local yh = Extras.Yhwach
+    local request = Extras.PriorityRequest
+    local checker = request ~= nil and request ~= "yhwach" and movementOwnerActiveCheck[request]
+    if checker and not checker() then
+        yh.log("PRIORITY cleared stale request " .. tostring(request))
+        Extras.PriorityRequest = nil
+        request = nil
+    end
+    if request == nil or (request == "twoh" and workspaceService:GetAttribute("Dungeon") == nil) then
+        Extras.PriorityRequest = "yhwach"
+    end
+    if Extras.PriorityRequest ~= "yhwach" then
+        yh.WaitSince = nil
+        return false, Extras.PriorityRequest
+    end
+    if acquireMovement("yhwach") then
+        yh.WaitSince = nil
+        return true
+    end
+    yh.WaitSince = yh.WaitSince or os.clock()
+    local teleporting = (Extras.RevertWatch.ExpectUntil or 0) > os.clock()
+    local entering = movementOwner == "dungeon" or movementOwner == "araya"
+    if os.clock() - yh.WaitSince > 8 and not teleporting and not entering then
+        stopTween()
+        movementOwner = nil
+    end
+    return false, movementOwner
+end
+
+function Extras.Yhwach.releaseAll()
+    local yh = Extras.Yhwach
+    if Extras.PriorityRequest == "yhwach" then
+        Extras.PriorityRequest = nil
+    end
+    yh.WaitSince = nil
+    yh.MoneyPhase = false
+    if movementOwner == "yhwach" then
+        stopTween()
+        Combat.ApproachRoot = nil
+        lockedEnemyRoot = nil
+        lockedTargetCFrame = nil
+        setTargetBox(nil)
+    end
+    releaseMovement("yhwach")
+end
+
+function Extras.Yhwach.idle(message)
+    local yh = Extras.Yhwach
+    yh.releaseAll()
+    yh.Idle = true
+    yh.status(message)
+    task.wait(3)
+end
+
+function Extras.Yhwach.stop(syncUI)
+    Extras.stopLoop("AutoYhwachEnabled", "yhwach")
+    Extras.Yhwach.releaseAll()
+    Extras.Yhwach.Idle = false
+    if syncUI then
+        Extras.syncToggle("YhwachToggle", false)
+    end
+end
+
+function Extras.Yhwach.halt(reason)
+    local yh = Extras.Yhwach
+    yh.data().Halt = reason
+    yh.save()
+    yh.log("HALT " .. tostring(reason))
+    yh.status("halted: " .. tostring(reason))
+    yh.stop(true)
+end
+
+function Extras.Yhwach.fail(reason)
+    local yh = Extras.Yhwach
+    yh.Fails = yh.Fails + 1
+    yh.log("FAIL " .. tostring(reason) .. " | " .. tostring(State.LastNotifyText))
+    if yh.Fails >= 3 then
+        yh.Fails = 0
+        yh.idle(tostring(reason) .. " | retrying in 30s")
+        local resumeAt = os.clock() + 27
+        while yh.isActive() and os.clock() < resumeAt do
+            task.wait(0.5)
+        end
+        return
+    end
+    yh.status(string.format("%s (attempt %d/3)", tostring(reason), yh.Fails))
+    task.wait(1)
+end
+
+function Extras.Yhwach.goToHerald()
+    local yh = Extras.Yhwach
+    lockedEnemyRoot = nil
+    lockedTargetCFrame = nil
+    setTargetBox(nil)
+    return Extras.goToNPCAt(yh.NPCName, yh.NPCPosition, yh.isActive, yh.status)
+end
+
+function Extras.Yhwach.inAcceptGrace(key)
+    local yh = Extras.Yhwach
+    local seenAt = yh.GraceSeen[key] or os.clock()
+    yh.GraceSeen[key] = seenAt
+    return os.clock() - seenAt < yh.AcceptGrace
+end
+
+function Extras.Yhwach.acceptQuest(questName, choiceText)
+    local yh = Extras.Yhwach
+    local function accepted()
+        return UnlockFarm.getActiveQuestFolder(questName) ~= nil or UnlockFarm.isQuestCompleted(questName)
+    end
+    yh.status("going to the Quincy Herald to accept " .. questName)
+    local npc = yh.goToHerald()
+    if not npc then
+        yh.fail("cannot reach the Quincy Herald to accept " .. questName)
+        return
+    end
+    local _, reply = invokeInput("Quest", "Accept", npc, questName)
+    task.wait(0.8)
+    if not accepted() and choiceText and Extras.openArayaDialogue(npc) then
+        Extras.pickArayaChoice(choiceText, accepted)
+        local deadline = os.clock() + 3
+        while not accepted() and os.clock() < deadline do
+            task.wait(0.2)
+        end
+        if isDialogueOpen() then
+            Extras.pickArayaChoice("leave")
+        end
+    end
+    yh.log(string.format("ACCEPT %s reply=%s accepted=%s | %s", questName, tostring(reply), tostring(accepted()), tostring(State.LastNotifyText)))
+    if accepted() then
+        yh.Fails = 0
+        yh.status(questName .. " accepted")
+    else
+        yh.fail(questName .. " was not accepted")
+    end
+end
+
+function Extras.Yhwach.claimQuest(questName)
+    local yh = Extras.Yhwach
+    yh.status("claiming " .. questName .. " at the Quincy Herald")
+    local npc = yh.goToHerald()
+    if not npc then
+        yh.fail("cannot reach the Quincy Herald to claim " .. questName)
+        return false
+    end
+    local before = yh.getCounts()
+    local beforeText = yh.snapshot()
+    local _, reply = invokeInput("Quest", "Claim", questName)
+    local deadline = os.clock() + 4
+    while not UnlockFarm.isQuestCompleted(questName) and os.clock() < deadline do
+        task.wait(0.2)
+    end
+    task.wait(1)
+    local after = yh.getCounts()
+    yh.log(string.format("CLAIM %s reply=%s completed=%s | notify %s", questName, tostring(reply), tostring(UnlockFarm.isQuestCompleted(questName)), tostring(State.LastNotifyText)))
+    yh.log("  before " .. beforeText)
+    yh.log("  after  " .. yh.snapshot())
+    if not UnlockFarm.isQuestCompleted(questName) then
+        yh.fail(questName .. " claim was not accepted")
+        return false
+    end
+    yh.Fails = 0
+    if questName == yh.Successor then
+        local consumed = 0
+        for name in pairs(yh.Statues) do
+            consumed = math.max(consumed, before.Schrift[name] - after.Schrift[name])
+        end
+        yh.log("Successor claim Schrift counts | consumed " .. tostring(consumed) .. " of each | target stays " .. tostring(yh.schriftTarget()))
+        for _, name in ipairs(yh.Route) do
+            yh.log(string.format("  %s %d -> %d", yh.Statues[name].Schrift, before.Schrift[name], after.Schrift[name]))
+        end
+        yh.save()
+    end
+    yh.GraceSeen = {}
+    return true
+end
+
+function Extras.Yhwach.moneyPhase(floor, target, label)
+    local yh = Extras.Yhwach
+    local money = getMoney()
+    if not yh.MoneyPhase and money < floor then
+        yh.MoneyPhase = true
+        yh.MoneyPhaseStartedAt = os.clock()
+        yh.log(string.format("MONEY phase start $%.1fM < $%.1fM", money / 1000000, floor / 1000000))
+    end
+    if yh.MoneyPhase and (money >= target or os.clock() - (yh.MoneyPhaseStartedAt or 0) > yh.MoneyPhaseCap) then
+        yh.MoneyPhase = false
+        return false
+    end
+    if not yh.MoneyPhase then
+        return false
+    end
+    local rank = Extras.getFireForceRank()
+    if rank == "" or rank == "None" then
+        yh.MoneyPhase = false
+        yh.idle(string.format("%s | money $%.1fM below $%.1fM and Ambush needs a Fire Force rank | waiting", label, money / 1000000, floor / 1000000))
+        return true
+    end
+    local text = string.format("Yhwach: %s | money $%.1fM/%.0fM | Ambush", label, money / 1000000, target / 1000000)
+    if not Extras.runAmbushDuty(function()
+        return yh.isActive() and getMoney() < target
+    end, text) then
+        State.ExtraStatus = text .. " | waiting for the next ambush"
+        task.wait(0.5)
+    end
+    return true
+end
+
+function Extras.Yhwach.craftSchrift(name)
+    local yh = Extras.Yhwach
+    local info = yh.Statues[name]
+    local requirement = yh.getRequirement(info.Schrift)
+    if not requirement then
+        yh.halt("the Herald has no recipe for " .. info.Schrift)
+        return
+    end
+    local missingText = yh.missing(requirement)
+    if missingText then
+        yh.fail("cannot inscribe " .. info.Schrift .. ": " .. missingText)
+        return
+    end
+    yh.status("inscribing " .. info.Schrift .. " at the Quincy Herald")
+    local npc = yh.goToHerald()
+    if not npc then
+        yh.fail("cannot reach the Quincy Herald to inscribe " .. info.Schrift)
+        return
+    end
+    missingText = yh.missing(requirement)
+    if missingText then
+        yh.fail("cannot inscribe " .. info.Schrift .. ": " .. missingText)
+        return
+    end
+    local before = getInventoryAmount(info.Schrift)
+    local beforeText = yh.snapshot()
+    local finished, reply = invokeInput("Shop", npc, info.Schrift)
+    local deadline = os.clock() + ((reply == true or not finished) and 8 or 3)
+    while getInventoryAmount(info.Schrift) <= before and os.clock() < deadline do
+        task.wait(0.2)
+    end
+    local method = "shop"
+    if getInventoryAmount(info.Schrift) <= before and finished and reply ~= true and reply ~= "Full" and Extras.openArayaDialogue(npc) then
+        method = "dialogue"
+        Extras.pickArayaChoice(info.Choice, function()
+            return getInventoryAmount(info.Schrift) > before
+        end)
+        deadline = os.clock() + 3
+        while getInventoryAmount(info.Schrift) <= before and os.clock() < deadline do
+            task.wait(0.2)
+        end
+        if isDialogueOpen() then
+            Extras.pickArayaChoice("leave")
+        end
+    end
+    local crafted = getInventoryAmount(info.Schrift) > before
+    yh.log(string.format("CRAFT %s via %s reply=%s crafted=%s | %s", info.Schrift, method, tostring(reply), tostring(crafted), tostring(State.LastNotifyText)))
+    yh.log("  before " .. beforeText)
+    yh.log("  after  " .. yh.snapshot())
+    if crafted then
+        yh.Fails = 0
+        yh.stat("Crafts")
+        yh.save()
+    elseif reply == "Full" then
+        yh.halt("inventory full: free an inventory slot for " .. info.Schrift)
+    else
+        yh.fail(info.Schrift .. " was not inscribed (reply " .. tostring(reply) .. ")")
+    end
+end
+
+function Extras.Yhwach.nextCraft(counts, stage)
+    local yh = Extras.Yhwach
+    if stage ~= "successor" and stage ~= "audience" then
+        return nil
+    end
+    local target = stage == "successor" and 1 or yh.schriftTarget()
+    local blocked = nil
+    for _, name in ipairs(yh.Route) do
+        local info = yh.Statues[name]
+        if counts.Schrift[name] < target then
+            local requirement = yh.getRequirement(info.Schrift)
+            if not requirement then
+                yh.NoRecipeLogged = yh.NoRecipeLogged or {}
+                if not yh.NoRecipeLogged[info.Schrift] then
+                    yh.NoRecipeLogged[info.Schrift] = true
+                    yh.log("no recipe found for " .. info.Schrift)
+                end
+            end
+            local onlyReishi = requirement ~= nil
+            local ready = requirement ~= nil
+            for _, entry in ipairs(requirement or {}) do
+                if getInventoryAmount(entry.Item) < entry.Amount then
+                    ready = false
+                    if entry.Item ~= yh.ReishiItem then
+                        onlyReishi = false
+                    end
+                end
+            end
+            if ready then
+                return name
+            end
+            if onlyReishi then
+                blocked = name
+            end
+        end
+    end
+    return nil, blocked
+end
+
+function Extras.Yhwach.fightActive()
+    local yh = Extras.Yhwach
+    if not (yh.isActive() and Extras.PriorityRequest == "yhwach" and movementOwner == "yhwach") then
+        return false
+    end
+    movementOwnerSince = os.clock()
+    return true
+end
+
+function Extras.Yhwach.killBoss(finder, label)
+    local yh = Extras.Yhwach
+    local enemy = finder()
+    if not enemy then
+        return false, 0, 0
+    end
+    local humanoid = enemy:FindFirstChildOfClass("Humanoid")
+    local maxHealth = humanoid and humanoid.MaxHealth or 0
+    local startedAt = os.clock()
+    local deathsBefore = yh.Deaths
+    local enemyRoot = enemy:FindFirstChild("HumanoidRootPart")
+    local lastPosition = enemyRoot and enemyRoot.Position or Vector3.zero
+    local lastRatio = humanoid and humanoid.Health / math.max(humanoid.MaxHealth, 1) or 1
+    local missingSince = nil
+    local killed = false
+    yh.log(string.format("FIGHT %s start | model %s | MaxHealth %.0f Health %.0f | at %s", label, enemy.Name, maxHealth, humanoid and humanoid.Health or 0, tostring(lastPosition)))
+    while yh.fightActive() and os.clock() - startedAt < yh.FightTimeout do
+        yh.trackDeaths()
+        yh.syncBank()
+        local rootPart, playerHumanoid = getRoot()
+        local current = finder()
+        if current then
+            missingSince = nil
+            enemy = current
+            humanoid = enemy:FindFirstChildOfClass("Humanoid")
+            enemyRoot = enemy:FindFirstChild("HumanoidRootPart")
+            if enemyRoot then
+                lastPosition = enemyRoot.Position
+            end
+            if humanoid then
+                lastRatio = humanoid.Health / math.max(humanoid.MaxHealth, 1)
+                maxHealth = math.max(maxHealth, humanoid.MaxHealth)
+            end
+            if not (Extras.OverHeaven and Extras.OverHeaven.Busy) then
+                farmMobWithAnchor(enemy.Name, function()
+                    return yh.fightActive() and finder() ~= nil
+                end, true)
+            end
+            yh.status(string.format("%s | %s %.1f%% HP | %.0fs | deaths %d", yh.Prefix or "", label, lastRatio * 100, os.clock() - startedAt, yh.Deaths - deathsBefore))
+        elseif not rootPart or not playerHumanoid or playerHumanoid.Health <= 0 then
+            yh.status(string.format("%s | dead during %s | waiting to respawn", yh.Prefix or "", label))
+            task.wait(0.5)
+        elseif (rootPart.Position - lastPosition).Magnitude > yh.ReturnRange then
+            missingSince = nil
+            yh.status(string.format("%s | returning to %s (%.0f studs)", yh.Prefix or "", label, (rootPart.Position - lastPosition).Magnitude))
+            lockedEnemyRoot = nil
+            lockedTargetCFrame = nil
+            setTargetBox(nil)
+            safeTravelTo(CFrame.new(lastPosition + Vector3.new(0, 20, 0)), function()
+                local currentRoot = getRoot()
+                return yh.fightActive() and finder() == nil and currentRoot ~= nil and (currentRoot.Position - lastPosition).Magnitude > yh.ReturnRange * 0.6
+            end)
+        else
+            missingSince = missingSince or os.clock()
+            local gone = enemy.Parent == nil or (humanoid ~= nil and humanoid.Health <= 0)
+            if gone or os.clock() - missingSince > 4 then
+                killed = gone and lastRatio < 0.35 or (humanoid ~= nil and humanoid.Health <= 0)
+                break
+            end
+        end
+        task.wait(0.1)
+    end
+    local seconds = os.clock() - startedAt
+    lockedEnemyRoot = nil
+    lockedTargetCFrame = nil
+    Combat.LockedMobName = nil
+    setTargetBox(nil)
+    yh.log(string.format("FIGHT %s end | killed %s | last HP %.1f%% | %.1fs | deaths %d | %.0f HP/s", label, tostring(killed), lastRatio * 100, seconds, yh.Deaths - deathsBefore, seconds > 0 and maxHealth / seconds or 0))
+    return killed, seconds, maxHealth
+end
+
+function Extras.Yhwach.pickSoldier(origin, current)
+    local yh = Extras.Yhwach
+    local alive = {}
+    for _, enemy in ipairs(enemiesFolder:GetChildren()) do
+        if enemy.Name == yh.SoldierName then
+            local living, enemyRoot = isLivingEnemy(enemy)
+            if living then
+                table.insert(alive, enemyRoot)
+            end
+        end
+    end
+    local best, bestValue, currentValue = nil, -math.huge, -math.huge
+    for _, enemyRoot in ipairs(alive) do
+        local count, spread = 0, 0
+        for _, other in ipairs(alive) do
+            local gap = (other.Position - enemyRoot.Position).Magnitude
+            if gap <= yh.ClusterRadius then
+                count = count + 1
+                spread = spread + gap
+            end
+        end
+        local value = count - (enemyRoot.Position - origin).Magnitude / yh.ClusterTravel - spread / 1000
+        if enemyRoot == current then
+            currentValue = value
+        end
+        if value > bestValue then
+            best, bestValue = enemyRoot, value
+        end
+    end
+    return best, bestValue, currentValue
+end
+
+function Extras.Yhwach.engageCluster(active)
+    local yh = Extras.Yhwach
+    local rootPart = getRoot()
+    if not rootPart then
+        return
+    end
+    local current = lockedEnemyRoot
+    local currentModel = current and current.Parent
+    local currentValid = currentModel ~= nil and currentModel.Name == yh.SoldierName and isLivingEnemy(currentModel)
+    local best, bestValue, currentValue = yh.pickSoldier(rootPart.Position, currentValid and current or nil)
+    if currentValid and (best == nil or bestValue < currentValue + yh.ClusterSwitchMargin) then
+        best = current
+    end
+    if not best then
+        lockedEnemyRoot = nil
+        task.wait(0.2)
+        return
+    end
+    local enemyModel = best.Parent
+    local enemyHumanoid = enemyModel and enemyModel:FindFirstChildOfClass("Humanoid")
+    if not enemyHumanoid then
+        return
+    end
+    setTargetBox(enemyModel)
+    lastKnownMobCFrame = getFarmCFrame(best)
+    if best ~= current and (best.Position - rootPart.Position).Magnitude > 150 then
+        lockedEnemyRoot = nil
+        lockedTargetCFrame = nil
+        Combat.ApproachRoot = best
+        local function stillValid()
+            return active() and enemyHumanoid.Health > 0 and best.Parent ~= nil
+        end
+        travelTo(function()
+            if not stillValid() then
+                return nil
+            end
+            local currentRoot = getRoot()
+            if currentRoot and (currentRoot.Position - best.Position).Magnitude <= 60 then
+                return nil
+            end
+            return getFarmCFrame(best)
+        end, stillValid)
+        Combat.ApproachRoot = nil
+        if best.Parent == nil or enemyHumanoid.Health <= 0 then
+            return
+        end
+    end
+    lockedTargetCFrame = nil
+    lockedEnemyRoot = best
+    Combat.LockedMobName = yh.SoldierName
+    Combat.LockedAllowBoss = false
+    if yh.ClusterAim then
+        local sum, members = Vector3.zero, 0
+        for _, enemy in ipairs(enemiesFolder:GetChildren()) do
+            if enemy.Name == yh.SoldierName then
+                local living, enemyRoot = isLivingEnemy(enemy)
+                if living and (enemyRoot.Position - best.Position).Magnitude <= yh.ClusterRadius then
+                    sum = sum + enemyRoot.Position
+                    members = members + 1
+                end
+            end
+        end
+        local center = members > 1 and sum / members or best.Position
+        Combat.AimOverride = center
+        Combat.HoverOverride = getFarmCFrame(best) + (center - best.Position)
+        Combat.HoverCastRange = yh.ClusterCastRange
+        Combat.OverrideUntil = os.clock() + 0.6
+    end
+    local character = localPlayer.Character
+    if character then
+        equipCombatTool(character)
+    end
+end
+
+function Extras.Yhwach.farmSoldiers(label, keepGoing)
+    local yh = Extras.Yhwach
+    local function active()
+        return yh.fightActive() and keepGoing() and yh.findKing() == nil
+    end
+    local rootPart = getRoot()
+    if not rootPart then
+        task.wait(1)
+        return
+    end
+    local nearSoldier = getTargetEnemy(yh.SoldierName, rootPart.Position, false)
+    local nearRoot = nearSoldier and nearSoldier:FindFirstChild("HumanoidRootPart")
+    if (not nearRoot or (nearRoot.Position - rootPart.Position).Magnitude > 600) and (rootPart.Position - yh.SoldierSpot).Magnitude > 150 then
+        yh.status(label .. " | flying to the Quincy Soldiers")
+        lockedEnemyRoot = nil
+        lockedTargetCFrame = nil
+        lastKnownMobCFrame = nil
+        setTargetBox(nil)
+        safeTravelTo(CFrame.new(yh.SoldierSpot + Vector3.new(0, 8, 0)), function()
+            local currentRoot = getRoot()
+            return active() and currentRoot ~= nil and (currentRoot.Position - yh.SoldierSpot).Magnitude > 120
+        end)
+    end
+    local startedAt = os.clock()
+    local reishiBefore = getInventoryAmount(yh.ReishiItem)
+    local killsBefore = BossFarm.Quincy.Kills
+    while active() and os.clock() - startedAt < yh.SoldierBurst do
+        yh.trackDeaths()
+        local currentRoot = getRoot()
+        if currentRoot and getTargetEnemy(yh.SoldierName, currentRoot.Position, false) then
+            if not (Extras.OverHeaven and Extras.OverHeaven.Busy) then
+                if yh.ClusterFarm then
+                    yh.engageCluster(active)
+                else
+                    farmMobWithAnchor(yh.SoldierName, active, false)
+                end
+            end
+        else
+            task.wait(0.4)
+        end
+        yh.syncBank()
+        yh.status(string.format("%s | soldiers | bank %d | Reishi %d", label, yh.bank(), getInventoryAmount(yh.ReishiItem)))
+        task.wait(0.1)
+    end
+    Combat.OverrideUntil = 0
+    local seconds = os.clock() - startedAt
+    local kills = math.max(0, BossFarm.Quincy.Kills - killsBefore)
+    local gained = math.max(0, getInventoryAmount(yh.ReishiItem) - reishiBefore)
+    yh.stat("FarmSeconds", seconds)
+    yh.stat("FarmKills", kills)
+    yh.stat("FarmReishi", gained)
+    yh.log(string.format("SOLDIERS %.0fs kills %d Reishi +%d bank %d", seconds, kills, gained, yh.bank()))
+    yh.save()
+end
+
+function Extras.Yhwach.summonStatue(name)
+    local yh = Extras.Yhwach
+    local data = yh.data()
+    local info = yh.Statues[name]
+    local function finder()
+        return yh.findBoss(name)
+    end
+    if finder() then
+        return "alive"
+    end
+    local part, prompt = yh.getStatuePrompt(name)
+    local rootPart = getRoot()
+    local standPosition = (part and part.Position or info.Position) + Vector3.new(0, 3, 6)
+    if not rootPart or not part or (part.Position - rootPart.Position).Magnitude > 10 then
+        yh.status(string.format("%s | flying to the %s statue", yh.Prefix or "", name))
+        lockedEnemyRoot = nil
+        lockedTargetCFrame = nil
+        setTargetBox(nil)
+        safeTravelTo(CFrame.new(standPosition), function()
+            return yh.fightActive() and not finder()
+        end)
+        task.wait(0.5)
+        part, prompt = yh.getStatuePrompt(name)
+        rootPart = getRoot()
+    end
+    if finder() then
+        return "alive"
+    end
+    if not prompt or not rootPart or (part.Position - rootPart.Position).Magnitude > 14 then
+        yh.fail("cannot reach the " .. name .. " statue")
+        return "fail"
+    end
+    if not prompt.Enabled then
+        yh.BusyUntil[name] = os.clock() + 20
+        yh.log("STATUE " .. name .. " prompt disabled (busy)")
+        yh.status(name .. " statue is busy | trying the next one")
+        return "busy"
+    end
+    local reishiBefore = getInventoryAmount(yh.ReishiItem)
+    local matBefore = getInventoryAmount(info.Material)
+    local sentAt = os.clock()
+    triggerPrompt(prompt)
+    local spawned = false
+    local deadline = os.clock() + 4
+    while os.clock() < deadline do
+        if getInventoryAmount(yh.ReishiItem) < reishiBefore or finder() then
+            spawned = true
+            break
+        end
+        task.wait(0.1)
+    end
+    local notifyText = (State.LastNotifyTime or 0) >= sentAt and tostring(State.LastNotifyText) or ""
+    yh.syncBank()
+    yh.log(string.format("SUMMON %s spawned=%s reishi %d->%d bank %d | %s", name, tostring(spawned), reishiBefore, getInventoryAmount(yh.ReishiItem), yh.bank(), notifyText))
+    if not spawned then
+        if (State.BossCapAt or 0) >= sentAt then
+            yh.CapUntil = os.clock() + yh.CapBackoff
+            yh.log(string.format("SUMMON %s refused | the server is at its boss cap | retry after a kill or in %ds", name, yh.CapBackoff))
+            return "cap"
+        end
+        local lowered = string.lower(notifyText)
+        local slain = string.match(lowered, "slain[^%(]*%((%d+)/%d+%)")
+        if slain then
+            data.BankKnown = true
+            data.Bank = tonumber(slain)
+            yh.log("BANK resync from refusal " .. tostring(slain))
+            yh.save()
+            return "refused"
+        end
+        if string.find(lowered, "banked", 1, true) then
+            data.BankKnown = true
+            if yh.bank() >= yh.SummonKills then
+                data.Bank = 0
+            end
+            yh.save()
+            return "refused"
+        end
+        if string.find(lowered, "at a time", 1, true) or string.find(lowered, "already", 1, true) then
+            yh.BusyUntil[name] = os.clock() + 20
+            return "busy"
+        end
+        if not data.BankKnown then
+            data.BankKnown = true
+            data.Bank = 0
+            yh.save()
+            return "refused"
+        end
+        yh.BusyUntil[name] = os.clock() + yh.RefusedBackoff
+        data.Bank = math.max(0, yh.bank() - 10)
+        yh.save()
+        yh.log(string.format("SUMMON %s refused without a count | backing off %ds | bank lowered to %d", name, yh.RefusedBackoff, yh.bank()))
+        yh.fail(name .. " summon rejected | " .. notifyText)
+        return "fail"
+    end
+    yh.stat("Summons")
+    data.Bank = math.max(0, yh.bank() - yh.SummonKills)
+    data.BankKnown = true
+    data.Summoned[name] = { Mat = matBefore }
+    yh.GoneSince[name] = nil
+    yh.SetStartedAt = yh.SetStartedAt or os.clock()
+    yh.save()
+    local streamDeadline = os.clock() + 6
+    while os.clock() < streamDeadline and not finder() do
+        task.wait(0.2)
+    end
+    if not finder() then
+        yh.BusyUntil[name] = os.clock() + 15
+        yh.log("SUMMON " .. name .. " paid but no boss seen within 6s")
+        return "unseen"
+    end
+    return "spawned"
+end
+
+function Extras.Yhwach.reconcileSummoned()
+    local yh = Extras.Yhwach
+    local data = yh.data()
+    local changed = false
+    for name, entry in pairs(data.Summoned) do
+        local info = yh.Statues[name]
+        if not info or typeof(entry) ~= "table" then
+            data.Summoned[name] = nil
+            changed = true
+        elseif yh.findBoss(name) then
+            yh.GoneSince[name] = nil
+        else
+            local have = getInventoryAmount(info.Material)
+            local had = tonumber(entry.Mat) or have
+            if have > had then
+                data.Summoned[name] = nil
+                yh.GoneSince[name] = nil
+                if not data.SetKills[name] then
+                    data.SetKills[name] = true
+                    yh.stat("StatueKills")
+                    yh.stat("SplashKills")
+                    yh.Fails = 0
+                end
+                yh.log(string.format("STATUE %s died beside another fight | credited mat %d->%d | set %d/5", name, had, have, yh.setCount()))
+                changed = true
+            else
+                yh.GoneSince[name] = yh.GoneSince[name] or os.clock()
+                if os.clock() - yh.GoneSince[name] > yh.SummonLostAfter then
+                    data.Summoned[name] = nil
+                    yh.GoneSince[name] = nil
+                    yh.log(string.format("STATUE %s boss gone for %ds without a credit | will summon again", name, yh.SummonLostAfter))
+                    changed = true
+                end
+            end
+        end
+    end
+    if changed then
+        yh.save()
+    end
+end
+
+function Extras.Yhwach.routeOrder(pending, count)
+    local yh = Extras.Yhwach
+    local rootPart = getRoot()
+    local start = rootPart and rootPart.Position or yh.SoldierSpot
+    local bestOrder, bestCost = nil, math.huge
+    local used = {}
+    local path = {}
+    local function walk(position, cost)
+        if cost >= bestCost then
+            return
+        end
+        if #path == count then
+            local total = cost + (yh.BossArea - position).Magnitude
+            if total < bestCost then
+                bestCost = total
+                bestOrder = table.clone(path)
+            end
+            return
+        end
+        for _, name in ipairs(pending) do
+            if not used[name] then
+                local statuePosition = yh.Statues[name].Position
+                used[name] = true
+                table.insert(path, name)
+                walk(statuePosition, cost + (statuePosition - position).Magnitude)
+                table.remove(path)
+                used[name] = nil
+            end
+        end
+    end
+    walk(start, 0)
+    return bestOrder or {}, bestCost
+end
+
+function Extras.Yhwach.summonBatch(pending)
+    local yh = Extras.Yhwach
+    local data = yh.data()
+    local count = math.min(#pending, math.max(1, yh.BatchSize))
+    local needReishi = count * yh.SummonReishi
+    local needBank = count * yh.SummonKills + yh.BankMargin
+    local reishi = getInventoryAmount(yh.ReishiItem)
+    if reishi < needReishi or (data.BankKnown and yh.bank() < needBank) then
+        yh.farmSoldiers(string.format("%s | batch of %d | Reishi %d/%d bank %d/%d", yh.Prefix or "", count, reishi, needReishi, yh.bank(), needBank), function()
+            return getInventoryAmount(yh.ReishiItem) < needReishi or (yh.data().BankKnown and yh.bank() < needBank)
+        end)
+        return
+    end
+    local maxAlive = tonumber(data.MaxAlive) or yh.MaxAliveDefault
+    if data.MaxAlive and os.time() - (tonumber(data.MaxAliveAt) or 0) > yh.MaxAliveRetry then
+        maxAlive = maxAlive + 1
+    end
+    local order, cost = yh.routeOrder(pending, maxAlive and math.max(1, math.min(count, maxAlive)) or count)
+    local startedAt = os.clock()
+    yh.log(string.format("BATCH summon %d (%s) | route %.0f studs | Reishi %d bank %d", #order, table.concat(order, ", "), cost, reishi, yh.bank()))
+    local summoned = 0
+    for _, name in ipairs(order) do
+        if not yh.fightActive() or yh.findKing() then
+            break
+        end
+        if getInventoryAmount(yh.ReishiItem) < yh.SummonReishi then
+            break
+        end
+        local result = yh.summonStatue(name)
+        if result == "spawned" or result == "alive" then
+            summoned = summoned + 1
+        elseif result == "cap" then
+            if summoned > 0 then
+                data.MaxAlive = summoned
+                data.MaxAliveAt = os.time()
+                yh.log("BATCH learned the boss cap: " .. tostring(summoned) .. " at a time")
+                yh.save()
+            end
+            break
+        elseif result == "refused" or result == "fail" then
+            break
+        end
+    end
+    if data.MaxAlive and summoned >= #order and summoned > tonumber(data.MaxAlive) then
+        data.MaxAlive = summoned
+        data.MaxAliveAt = os.time()
+        yh.log("BATCH boss cap raised to " .. tostring(summoned) .. " at a time")
+        yh.save()
+    end
+    yh.stat("BatchSeconds", os.clock() - startedAt)
+    yh.log(string.format("BATCH done | %d/%d up | %.1fs", summoned, #order, os.clock() - startedAt))
+end
+
+function Extras.Yhwach.fightStatue(name)
+    local yh = Extras.Yhwach
+    local data = yh.data()
+    local function finder()
+        return yh.findBoss(name)
+    end
+    if not finder() then
+        local reishi = getInventoryAmount(yh.ReishiItem)
+        if reishi < yh.SummonReishi then
+            yh.farmSoldiers(string.format("%s | Reishi %d/%d for %s", yh.Prefix or "", reishi, yh.SummonReishi, name), function()
+                return getInventoryAmount(yh.ReishiItem) < yh.SummonReishi
+            end)
+            return
+        end
+        if data.BankKnown and yh.bank() < yh.SummonKills then
+            yh.farmSoldiers(string.format("%s | bank %d/%d for %s", yh.Prefix or "", yh.bank(), yh.SummonKills, name), function()
+                return yh.bank() < yh.SummonKills
+            end)
+            return
+        end
+        local result = yh.summonStatue(name)
+        if result ~= "spawned" and result ~= "alive" then
+            return
+        end
+    end
+    local before = yh.getCounts()
+    local lettersBefore = tonumber(Extras.getQuestProgress(yh.Letters)) or 0
+    local killed, seconds, maxHealth = yh.killBoss(finder, name)
+    yh.CapUntil = nil
+    task.wait(1.5)
+    local after = yh.getCounts()
+    local credited = after.Mat[name] > before.Mat[name] or (tonumber(Extras.getQuestProgress(yh.Letters)) or 0) ~= lettersBefore
+    if killed or credited then
+        yh.stat("StatueFights")
+        yh.stat("StatueSeconds", seconds)
+        yh.stat("StatueReishi", math.max(0, after.Reishi - before.Reishi))
+        data.LastStatueMaxHealth = maxHealth
+    end
+    if credited then
+        if not data.SetKills[name] then
+            yh.stat("StatueKills")
+        end
+        data.SetKills[name] = true
+        data.Summoned[name] = nil
+        yh.GoneSince[name] = nil
+        yh.Fails = 0
+    end
+    yh.log(string.format("STATUE %s killed=%s credited=%s mat %d->%d Reishi %d->%d | set %d/5", name, tostring(killed), tostring(credited), before.Mat[name], after.Mat[name], before.Reishi, after.Reishi, yh.setCount()))
+    yh.save()
+    yh.reconcileSummoned()
+end
+
+function Extras.Yhwach.fightKing(king)
+    local yh = Extras.Yhwach
+    local data = yh.data()
+    yh.SetDoneAt = nil
+    local before = yh.getCounts()
+    local beforeText = yh.snapshot()
+    local pityBefore = localPlayer:GetAttribute(yh.PityAttribute)
+    yh.reconcileSummoned()
+    if data.KingFullSet == nil then
+        data.KingFullSet = yh.setCount() >= #yh.Route
+    end
+    local fullSet = data.KingFullSet == true
+    if yh.setCount() > 0 then
+        yh.log(string.format("KING engaged | server set reset | clearing set %d/5 (fullSet=%s)", yh.setCount(), tostring(fullSet)))
+    end
+    data.SetKills = {}
+    data.Summoned = {}
+    yh.GoneSince = {}
+    yh.save()
+    local killed, seconds, maxHealth = yh.killBoss(yh.findKing, "Quincy King")
+    task.wait(2)
+    local after = yh.getCounts()
+    local gotDrop = false
+    for _, drop in ipairs(yh.KingDrops) do
+        if after.Drop[drop.Item] > before.Drop[drop.Item] then
+            gotDrop = true
+        end
+    end
+    if killed or gotDrop then
+        data.KingKills = (tonumber(data.KingKills) or 0) + 1
+        data.NoKingSets = 0
+        data.LastKingMaxHealth = maxHealth
+        if fullSet then
+            data.Sets = (tonumber(data.Sets) or 0) + 1
+        end
+        yh.stat("KingFights")
+        yh.stat("KingSeconds", seconds)
+        yh.stat("KingReishi", math.max(0, after.Reishi - before.Reishi))
+        for _, drop in ipairs(yh.KingDrops) do
+            if after.Drop[drop.Item] > before.Drop[drop.Item] then
+                yh.stat("Drop " .. drop.Label, after.Drop[drop.Item] - before.Drop[drop.Item])
+            end
+        end
+        if yh.SetStartedAt and fullSet then
+            yh.stat("SetSeconds", os.clock() - yh.SetStartedAt)
+            yh.stat("SetsTimed")
+            yh.SetStartedAt = nil
+        end
+        local nowTime = os.time()
+        local lastKingAt = tonumber(data.LastKingAt)
+        if fullSet and lastKingAt and nowTime - lastKingAt < 3600 then
+            data.RecentSets = typeof(data.RecentSets) == "table" and data.RecentSets or {}
+            table.insert(data.RecentSets, nowTime - lastKingAt)
+            while #data.RecentSets > 6 do
+                table.remove(data.RecentSets, 1)
+            end
+            yh.log(string.format("CYCLE %.1f min King to King", (nowTime - lastKingAt) / 60))
+        end
+        data.LastKingAt = nowTime
+    end
+    if killed or gotDrop or not yh.findKing() then
+        data.KingFullSet = nil
+    end
+    yh.log(string.format("KING killed=%s fullSet=%s pity %s->%s", tostring(killed), tostring(fullSet), tostring(pityBefore), tostring(localPlayer:GetAttribute(yh.PityAttribute))))
+    yh.log("  before " .. beforeText)
+    yh.log("  after  " .. yh.snapshot())
+    yh.save()
+end
+
+function Extras.Yhwach.waitKing()
+    local yh = Extras.Yhwach
+    local data = yh.data()
+    if not yh.SetDoneAt then
+        yh.SetDoneAt = os.clock()
+        yh.log("SET complete | waiting for the Quincy King")
+    end
+    local king = yh.findKing()
+    if king then
+        yh.log(string.format("KING appeared after %.1fs as %s", os.clock() - yh.SetDoneAt, king.Name))
+        yh.fightKing(king)
+        return
+    end
+    local waited = os.clock() - yh.SetDoneAt
+    if waited < yh.KingWait then
+        yh.status(string.format("%s | set complete | waiting for the Quincy King (%ds)", yh.Prefix or "", math.floor(waited)))
+        task.wait(0.5)
+        return
+    end
+    yh.status(string.format("%s | no King seen | checking the King spot", yh.Prefix or ""))
+    lockedEnemyRoot = nil
+    lockedTargetCFrame = nil
+    setTargetBox(nil)
+    safeTravelTo(CFrame.new(yh.KingSpot + Vector3.new(0, 25, 0)), function()
+        return yh.fightActive() and yh.findKing() == nil
+    end)
+    local scanUntil = os.clock() + 8
+    while yh.fightActive() and os.clock() < scanUntil and not yh.findKing() do
+        task.wait(0.5)
+    end
+    if yh.findKing() then
+        yh.log("KING found at the King spot after the rescan")
+        return
+    end
+    if not yh.fightActive() then
+        return
+    end
+    yh.SetDoneAt = nil
+    data.NoKingSets = (tonumber(data.NoKingSets) or 0) + 1
+    data.SetKills = {}
+    data.Summoned = {}
+    yh.log("NO KING after a full set and a rescan at the King spot (" .. tostring(data.NoKingSets) .. " in a row)")
+    yh.save()
+    if data.NoKingSets >= yh.NoKingLimit then
+        yh.halt(string.format("the Quincy King did not appear after %d full sets in a row", yh.NoKingLimit))
+    end
+end
+
+function Extras.Yhwach.grindStep(stage)
+    local yh = Extras.Yhwach
+    local data = yh.data()
+    yh.syncBank()
+    local counts = yh.getCounts()
+    local needs = yh.getNeeds(counts, stage)
+    yh.Prefix = stage
+    yh.Detail = yh.summary(counts, needs)
+    yh.estimate(counts, needs)
+    local craftName, blockedBy = yh.nextCraft(counts, stage)
+    if craftName then
+        yh.StallSince = nil
+        yh.craftSchrift(craftName)
+        return
+    end
+    if blockedBy then
+        yh.StallSince = nil
+        yh.farmSoldiers(string.format("%s | Reishi %d/%d to inscribe %s", stage, counts.Reishi, yh.CraftReishi, yh.Statues[blockedBy].Schrift), function()
+            return getInventoryAmount(yh.ReishiItem) < yh.CraftReishi
+        end)
+        return
+    end
+    yh.reconcileSummoned()
+    local wanted = {}
+    for _, name in ipairs(yh.Route) do
+        if needs.King then
+            wanted[name] = not data.SetKills[name]
+        else
+            wanted[name] = needs.Letters[name] == true or needs.Mat[name] > 0
+        end
+    end
+    local rootPart = getRoot()
+    local origin = rootPart and rootPart.Position or yh.SoldierSpot
+    local anyWanted = false
+    local aliveName, aliveDistance = nil, math.huge
+    local pending = {}
+    for _, name in ipairs(yh.Route) do
+        if wanted[name] then
+            anyWanted = true
+            local boss = yh.findBoss(name)
+            local bossRoot = boss and boss:FindFirstChild("HumanoidRootPart")
+            if bossRoot then
+                local distance = (bossRoot.Position - origin).Magnitude
+                if distance < aliveDistance then
+                    aliveName, aliveDistance = name, distance
+                end
+            elseif not data.Summoned[name] and os.clock() >= (yh.BusyUntil[name] or 0) then
+                table.insert(pending, name)
+            end
+        end
+    end
+    if aliveName then
+        yh.StallSince = nil
+        local aliveCount = 0
+        for _, name in ipairs(yh.Route) do
+            if wanted[name] and yh.findBoss(name) then
+                aliveCount = aliveCount + 1
+            end
+        end
+        if aliveCount >= 2 and os.clock() - (yh.PulledAt or 0) > yh.PullCooldown then
+            yh.PulledAt = os.clock()
+            yh.status(string.format("%s | gathering %d Sternritter at the boss area", stage, aliveCount))
+            lockedEnemyRoot = nil
+            lockedTargetCFrame = nil
+            setTargetBox(nil)
+            safeTravelTo(CFrame.new(yh.BossArea + Vector3.new(0, 15, 0)), function()
+                return yh.fightActive()
+            end)
+            local holdUntil = os.clock() + yh.PullHold
+            lockedTargetCFrame = CFrame.new(yh.BossArea + Vector3.new(0, 15, 0))
+            while yh.fightActive() and os.clock() < holdUntil do
+                task.wait(0.1)
+            end
+            lockedTargetCFrame = nil
+            yh.log(string.format("PULL %d Sternritter at the boss area", aliveCount))
+        end
+        yh.fightStatue(aliveName)
+        return
+    end
+    if #pending > 0 then
+        yh.StallSince = nil
+        if os.clock() < (yh.CapUntil or 0) then
+            yh.farmSoldiers(string.format("%s | server boss cap | farming soldiers until a retry", stage), function()
+                return os.clock() < (yh.CapUntil or 0)
+            end)
+            return
+        end
+        if yh.BatchSize > 1 then
+            yh.summonBatch(pending)
+        else
+            yh.fightStatue(pending[1])
+        end
+        return
+    end
+    if anyWanted then
+        yh.StallSince = nil
+        yh.status(stage .. " | every wanted statue is busy | waiting")
+        task.wait(1)
+        return
+    end
+    if needs.King then
+        yh.StallSince = nil
+        yh.waitKing()
+        return
+    end
+    yh.StallSince = yh.StallSince or os.clock()
+    local stalled = os.clock() - yh.StallSince
+    if stalled > yh.StallLimit then
+        yh.StallSince = nil
+        yh.log("STALL " .. stage .. " | nothing left to farm for " .. math.floor(stalled) .. "s | " .. yh.snapshot())
+        local quests = { yh.Audience }
+        local stageQuest = ({ letters = yh.Letters, successor = yh.Successor })[stage]
+        if stageQuest then
+            table.insert(quests, stageQuest)
+        end
+        for _, questName in ipairs(quests) do
+            yh.log(string.format("  %s active=%s ready=%s", questName, tostring(UnlockFarm.getActiveQuestFolder(questName) ~= nil), tostring(UnlockFarm.isQuestReadyToClaim(questName))))
+            for _, objective in ipairs(yh.decode(questName)) do
+                yh.log(string.format("  objective %s %s %d/%d", tostring(objective.Type), tostring(objective.Target), objective.Have, objective.Need))
+            end
+        end
+        yh.halt(string.format("nothing left to farm for %ds but %s is not ready to claim | see yhwach_log.txt", yh.StallLimit, stage))
+        return
+    end
+    yh.status(string.format("%s | nothing left to farm for this stage | rechecking (%ds/%ds)", stage, math.floor(stalled), yh.StallLimit))
+    task.wait(2)
+end
+
+function Extras.Yhwach.claimAudience()
+    local yh = Extras.Yhwach
+    local info = questData.Main[yh.Audience]
+    local cost = typeof(info) == "table" and typeof(info.ClaimCost) == "table" and info.ClaimCost or {}
+    local moneyCost = tonumber(cost.Money) or 0
+    local shardCost = tonumber(cost.Shards) or 0
+    if getMoney() < moneyCost + yh.MoneyMargin or yh.MoneyPhase then
+        if yh.moneyPhase(moneyCost + yh.MoneyMargin, moneyCost + yh.MoneyMargin * 2, "Audience costs $" .. tostring(moneyCost / 1000000) .. "M") then
+            return
+        end
+    end
+    if getMoney() < moneyCost then
+        yh.fail(string.format("Audience needs $%.0fM (have $%.1fM)", moneyCost / 1000000, getMoney() / 1000000))
+        return
+    end
+    if getShards() < shardCost then
+        yh.idle(string.format("Audience needs %d shards (have %d) | waiting", shardCost, getShards()))
+        return
+    end
+    if not UnlockFarm.isQuestReadyToClaim(yh.Audience) then
+        yh.status("Audience is not ready to claim yet")
+        return
+    end
+    yh.log(string.format("AUDIENCE claim | cost $%d + %d shards", moneyCost, shardCost))
+    yh.claimQuest(yh.Audience)
+end
+
+function Extras.Yhwach.inherit()
+    local yh = Extras.Yhwach
+    local requirement = yh.getRequirement(yh.InheritBuy)
+    if not requirement then
+        yh.halt("the Herald has no " .. yh.InheritBuy .. " choice")
+        return
+    end
+    local missingText = yh.missing(requirement)
+    if missingText then
+        yh.halt("Audience is done but the inheritance is short: " .. missingText)
+        return
+    end
+    yh.status("inheriting the Quincy King's power at the Herald")
+    local npc = yh.goToHerald()
+    if not npc then
+        yh.fail("cannot reach the Quincy Herald to inherit")
+        return
+    end
+    local beforeText = yh.snapshot()
+    local finished, reply = invokeInput("Shop", npc, yh.InheritBuy)
+    local deadline = os.clock() + ((reply == true or not finished) and 8 or 4)
+    while not yh.ownsStyle() and os.clock() < deadline do
+        task.wait(0.2)
+    end
+    local method = "shop"
+    if not yh.ownsStyle() and finished and reply ~= true and reply ~= "Full" and Extras.openArayaDialogue(npc) then
+        method = "dialogue"
+        Extras.pickArayaChoice("inherit the king", yh.ownsStyle)
+        deadline = os.clock() + 4
+        while not yh.ownsStyle() and os.clock() < deadline do
+            task.wait(0.2)
+        end
+        if isDialogueOpen() then
+            Extras.pickArayaChoice("leave")
+        end
+    end
+    yh.log(string.format("INHERIT via %s reply=%s owns=%s | %s", method, tostring(reply), tostring(yh.ownsStyle()), tostring(State.LastNotifyText)))
+    yh.log("  before " .. beforeText)
+    yh.log("  after  " .. yh.snapshot())
+    if reply == "Full" then
+        yh.halt("inventory full: free a slot for Yhwach")
+    elseif not yh.ownsStyle() then
+        yh.fail("inheritance not granted (reply " .. tostring(reply) .. ")")
+    end
+end
+
+function Extras.Yhwach.runCycle()
+    local yh = Extras.Yhwach
+    local ok, errorMessage = pcall(yh.runStep)
+    if ok then
+        yh.ErrorStreak = 0
+        return
+    end
+    yh.ErrorStreak = (yh.ErrorStreak or 0) + 1
+    yh.releaseAll()
+    yh.status("error: " .. tostring(errorMessage))
+    yh.log("ERROR " .. tostring(errorMessage))
+    if yh.ErrorStreak >= yh.ErrorStreakLimit then
+        yh.ErrorStreak = 0
+        yh.log(string.format("ERROR streak %d | pausing %ds", yh.ErrorStreakLimit, yh.ErrorPause))
+        yh.idle(string.format("%d errors in a row | pausing %ds | see yhwach_log.txt", yh.ErrorStreakLimit, yh.ErrorPause))
+        local resumeAt = os.clock() + yh.ErrorPause - 3
+        while yh.isActive() and os.clock() < resumeAt do
+            task.wait(0.5)
+        end
+        return
+    end
+    task.wait(2)
+end
+
+function Extras.Yhwach.runStep()
+    local yh = Extras.Yhwach
+    local dungeonName = workspaceService:GetAttribute("Dungeon")
+    if dungeonName ~= nil then
+        yh.releaseAll()
+        yh.Idle = true
+        yh.status("inside a dungeon (" .. tostring(dungeonName) .. ") | waiting")
+        task.wait(2)
+        return
+    end
+    local data = yh.data()
+    if typeof(data.Halt) == "string" and data.Halt ~= "" then
+        yh.stop(true)
+        yh.status("halted: " .. data.Halt .. " | turn Auto Yhwach on again to retry")
+        return
+    end
+    if yh.recentDeaths() >= yh.DeathLoopCount then
+        yh.DeathTimes = {}
+        yh.log(string.format("DEATH LOOP | %d deaths in %d min | pausing %ds", yh.DeathLoopCount, yh.DeathLoopWindow / 60, yh.DeathLoopPause))
+        yh.idle(string.format("death loop: %d deaths in %d min | pausing %d min", yh.DeathLoopCount, yh.DeathLoopWindow / 60, yh.DeathLoopPause / 60))
+        local resumeAt = os.clock() + yh.DeathLoopPause - 3
+        while yh.isActive() and os.clock() < resumeAt do
+            yh.status(string.format("death loop: %d deaths in %d min | resuming in %ds", yh.DeathLoopCount, yh.DeathLoopWindow / 60, math.ceil(resumeAt - os.clock())))
+            task.wait(1)
+        end
+        yh.log("DEATH LOOP pause over | resuming")
+        return
+    end
+    local stage = yh.getStage()
+    if stage ~= yh.Stage then
+        yh.Fails = 0
+        yh.log("STAGE " .. tostring(stage) .. " | " .. yh.snapshot())
+    end
+    yh.Stage = stage
+    if stage == "done" then
+        yh.log("DONE Yhwach is in the inventory")
+        yh.stop(true)
+        yh.status("Yhwach obtained | Auto Yhwach turned itself off")
+        return
+    end
+    if stage == "needsQuincy" then
+        yh.idle("your race is not Quincy | awaken the Quincy blood first")
+        return
+    end
+    if (stage == "waitSuccessor" or stage == "acceptAudience") and yh.inAcceptGrace(stage) then
+        yh.status(stage .. " | waiting for the next quest to auto-accept")
+        task.wait(1)
+        return
+    end
+    local owned, holder = yh.claim()
+    if not owned then
+        yh.status("waiting for " .. tostring(holder) .. " to hand over movement")
+        task.wait(0.5)
+        return
+    end
+    yh.Idle = false
+    pcall(function()
+        local counts = yh.getCounts()
+        yh.Detail = yh.summary(counts, yh.getNeeds(counts, stage))
+    end)
+    local king = yh.findKing()
+    local fighting = king ~= nil and stage ~= "inherit"
+    if fighting or not (stage == "letters" or stage == "successor" or stage == "audience") then
+        yh.StallSince = nil
+    end
+    if fighting then
+        yh.fightKing(king)
+    elseif stage == "acceptLetters" then
+        yh.acceptQuest(yh.Letters, "letters of the king")
+    elseif stage == "claimLetters" then
+        yh.claimQuest(yh.Letters)
+    elseif stage == "waitSuccessor" then
+        yh.acceptQuest(yh.Successor, nil)
+    elseif stage == "claimSuccessor" then
+        yh.claimQuest(yh.Successor)
+    elseif stage == "acceptAudience" then
+        yh.acceptQuest(yh.Audience, "audience with the king")
+    elseif stage == "claimAudience" then
+        yh.claimAudience()
+    elseif stage == "inherit" then
+        yh.inherit()
+    else
+        yh.grindStep(stage)
+    end
+    lockedTargetCFrame = nil
+    releaseMovement("yhwach")
 end
 
 Extras.Bankai = {
@@ -11801,6 +13647,10 @@ function Extras.stopAll()
         State.TwohRunDrops = nil
         task.spawn(Extras.Twoh.restoreStyle)
     end
+    Extras.stopLoop("AutoYhwachEnabled", "yhwach")
+    if Extras.Yhwach then
+        pcall(Extras.Yhwach.releaseAll)
+    end
     Extras.stopLoop("AutoBankaiEnabled", "bankai")
     Extras.stopLoop("AutoSolemnEnabled", "solemn")
     Extras.DeepsharkRequesters = {}
@@ -12529,6 +14379,12 @@ function Prestige.runDungeonInside(work, dungeonName)
     if not acquireMovement("prestige") then
         State.PrestigeStatus = label .. " | waiting for " .. tostring(Extras.PriorityRequest or movementOwner) .. " to finish"
         task.wait(0.5)
+        return
+    end
+    local sealPrompt = Extras.Twoh and Extras.Twoh.findSealPrompt()
+    if sealPrompt and not (Extras.Twoh and Extras.Twoh.anyLivingEnemy()) then
+        Extras.solveDungeonSeal(sealPrompt, dungeonName)
+        releaseMovement("prestige")
         return
     end
     local waveText = string.format("wave %s/%s", tostring(Extras.DungeonWave or "?"), tostring(Extras.DungeonMaxWave or "?"))
@@ -13432,6 +15288,71 @@ function UnlockFarm.gatherMaterial(materialName, neededAmount, currentAmount, pl
     local activePlan = plan or getMaterialPlan(materialName)
     local shortage = math.max(math.floor((neededAmount or 1) - (currentAmount or 0)), 1)
 
+    if materialName == "Meteor Fragment" then
+        local rootPart = getRoot()
+        local currentIsland = rootPart and getNearestIslandName(rootPart.Position)
+        if currentIsland ~= "Legacy Island" then
+            setFarmStatus("Warping to Legacy Island for Meteor Shower")
+            local arrived = teleportToIsland("Legacy Island")
+            if not arrived then
+                local tatsumakiNPC = findNPCByName("Tatsumaki")
+                if tatsumakiNPC then
+                    travelToNPC(tatsumakiNPC, function()
+                        return ownerCheck() and getInventoryAmount(materialName) < neededAmount
+                    end)
+                end
+            end
+            task.wait(1)
+            return
+        end
+
+        local worldPickup = findPickupByName("Meteor Fragment")
+        if worldPickup then
+            setFarmStatus(string.format("%s %d/%d | collecting meteor drop", materialName, currentAmount, neededAmount))
+            releaseMovement(ownerName)
+            collectPickup(worldPickup, function()
+                return ownerCheck() and getInventoryAmount(materialName) < neededAmount
+            end)
+            reacquireMovement(ownerName)
+            return
+        end
+
+        local meteorPrompt = nil
+        local spawnsFolder = extraFolder:FindFirstChild("Spawns") and extraFolder.Spawns:FindFirstChild("Meteors")
+        if spawnsFolder then
+            for _, spawnPoint in ipairs(spawnsFolder:GetChildren()) do
+                local prompt = spawnPoint:FindFirstChildWhichIsA("ProximityPrompt", true)
+                if prompt and prompt.Enabled then
+                    meteorPrompt = prompt
+                    break
+                end
+            end
+        end
+        if meteorPrompt then
+            setFarmStatus(string.format("%s %d/%d | mining fallen meteor", materialName, currentAmount, neededAmount))
+            local standCFrame = CFrame.new(meteorPrompt.Parent.Position + Vector3.new(0, 4, 3))
+            safeTravelTo(standCFrame, function()
+                return ownerCheck() and meteorPrompt.Enabled
+            end)
+            triggerPrompt(meteorPrompt)
+            task.wait(0.5)
+            return
+        end
+
+        local tatsumakiNPC = findNPCByName("Tatsumaki")
+        local waitCFrame = tatsumakiNPC and computeTalkCFrame(tatsumakiNPC) or CFrame.new(-75.7, 52, 129.1)
+        if rootPart and (rootPart.Position - waitCFrame.Position).Magnitude > 25 then
+            safeTravelTo(waitCFrame, function()
+                return ownerCheck() and getInventoryAmount(materialName) < neededAmount
+            end)
+        else
+            holdPosition(waitCFrame)
+        end
+        setFarmStatus(string.format("Tatsumaki | waiting on Legacy Island for Meteor Shower (%d/%d)", currentAmount, neededAmount))
+        task.wait(2)
+        return
+    end
+
     if activePlan.Kind == "pickup" then
         local worldPickup = findPickupByName(materialName)
         if worldPickup then
@@ -13537,6 +15458,23 @@ function UnlockFarm.runTarget(targetItem)
         lockedTargetCFrame = nil
         task.wait(1.5)
         return
+    end
+
+    if targetItem == "Tatsumaki" or targetItem == "Storm Esper" then
+        local rootPart = getRoot()
+        local currentIsland = rootPart and getNearestIslandName(rootPart.Position)
+        if currentIsland ~= "Legacy Island" and getInventoryAmount("Meteor Fragment") < 15 then
+            State.UnlockStatus = "Warping to Legacy Island for Tatsumaki"
+            local arrived = teleportToIsland("Legacy Island")
+            if not arrived then
+                local tatsumakiNPC = findNPCByName("Tatsumaki")
+                if tatsumakiNPC then
+                    travelToNPC(tatsumakiNPC, function()
+                        return State.UnlockEnabled and not UnlockFarm.isOwned(targetItem)
+                    end)
+                end
+            end
+        end
     end
 
     local nextQuest = UnlockFarm.getNextIncomplete(UnlockFarm.getQuestChainForItem(targetItem))
@@ -15122,6 +17060,13 @@ function UIController.refreshStatus(includeHeavy)
         end)
     end
 
+    if UIController.YhwachParagraph and Extras.Yhwach then
+        local yh = Extras.Yhwach
+        pcall(function()
+            UIController.YhwachParagraph:UpdateBody(table.concat({ tostring(yh.StatusText), tostring(yh.Detail), tostring(yh.EtaText), "Farm: " .. tostring(yh.FarmNote or "-") }, "\n"))
+        end)
+    end
+
     if UIController.StatParagraph then
         local lines = {}
         for index, statName in ipairs(getStatPriorityOrder()) do
@@ -15198,9 +17143,10 @@ function UIController.startStatusRefresh()
     statusRefreshThread = task.spawn(function()
         local refreshCount = 0
         while State.StatusRefreshEnabled do
-            task.wait(0.3)
+            local isWindowOpen = getgenv().HubWindow and getgenv().HubWindow:GetState()
+            task.wait(isWindowOpen and 0.8 or 2.0)
             refreshCount = refreshCount + 1
-            pcall(UIController.refreshStatus, refreshCount % 5 == 0)
+            pcall(UIController.refreshStatus, refreshCount % 3 == 0)
         end
     end)
 end
@@ -15353,6 +17299,129 @@ function UIController.startSettingsSaver()
     end)
 end
 
+local function applyFastMode(enabled)
+    pcall(function()
+        local lightingService = cloneref(game:GetService("Lighting"))
+        if enabled then
+            lightingService.GlobalShadows = false
+            lightingService.FogEnd = 9e9
+            lightingService.ShadowSoftness = 0
+            local terrain = workspaceService:FindFirstChildOfClass("Terrain")
+            if terrain then
+                terrain.Decoration = false
+                terrain.WaterWaveSize = 0
+                terrain.WaterWaveSpeed = 0
+            end
+            for _, v in ipairs(workspaceService:GetDescendants()) do
+                if v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then
+                    v.Enabled = false
+                end
+            end
+            if setfpscap then
+                setfpscap(60)
+            end
+        end
+    end)
+end
+
+function UIController.createMobileToggle()
+    local existing = game:GetService("CoreGui"):FindFirstChild("HubMobileToggleGui") or (localPlayer:FindFirstChild("PlayerGui") and localPlayer.PlayerGui:FindFirstChild("HubMobileToggleGui"))
+    if existing then
+        existing:Destroy()
+    end
+
+    local parent = nil
+    pcall(function()
+        if gethui then
+            parent = gethui()
+        end
+    end)
+    if not parent then
+        pcall(function()
+            parent = game:GetService("CoreGui")
+        end)
+    end
+    if not parent then
+        parent = localPlayer:FindFirstChildOfClass("PlayerGui")
+    end
+    if not parent then
+        return
+    end
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "HubMobileToggleGui"
+    screenGui.ResetOnSpawn = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+    local button = Instance.new("TextButton")
+    button.Name = "ToggleButton"
+    button.Size = UDim2.fromOffset(50, 50)
+    button.Position = UDim2.new(0, 15, 0.5, -25)
+    button.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
+    button.BackgroundTransparency = 0.15
+    button.BorderSizePixel = 0
+    button.Text = "HUB"
+    button.TextColor3 = Color3.fromRGB(235, 235, 245)
+    button.TextSize = 13
+    button.Font = Enum.Font.GothamBold
+    button.Active = true
+    button.AutoButtonColor = false
+    button.Parent = screenGui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 14)
+    corner.Parent = button
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Name = "Stroke"
+    stroke.Color = Color3.fromRGB(80, 80, 95)
+    stroke.Thickness = 1.5
+    stroke.Transparency = 0.2
+    stroke.Parent = button
+
+    local dragging = false
+    local dragStart = nil
+    local startPos = nil
+    local movedFar = false
+
+    button.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = button.Position
+            movedFar = false
+        end
+    end)
+
+    button.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            if delta.Magnitude > 6 then
+                movedFar = true
+            end
+            button.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+
+    local function finishDrag(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+            dragging = false
+            if not movedFar and getgenv().HubWindow then
+                local nextState = not getgenv().HubWindow:GetState()
+                getgenv().HubWindow:SetState(nextState)
+                if stroke then
+                    stroke.Color = nextState and Color3.fromRGB(110, 150, 255) or Color3.fromRGB(80, 80, 95)
+                    button.TextColor3 = nextState and Color3.fromRGB(110, 150, 255) or Color3.fromRGB(235, 235, 245)
+                end
+            end
+        end
+    end
+
+    button.InputEnded:Connect(finishDrag)
+    screenGui.Parent = parent
+    UIController.MobileToggleGui = screenGui
+end
+
 function UIController.Init()
     local questOptionsList = {}
     for qName, qInfo in pairs(questData.Main) do
@@ -15388,7 +17457,7 @@ function UIController.Init()
 
     local Window = MacLib:Window({
         Title = "Auto Farm Hub",
-        Subtitle = "Universal Edition",
+        Subtitle = "Universal Edition (Default)",
         Size = UDim2.fromOffset(800, 500),
         DragStyle = 1
     })
@@ -15666,9 +17735,6 @@ function UIController.Init()
 
     rightSection:Header({ Text = "Auto Open Chests" })
     local chestCatalog = AutoChest.getCatalog()
-    for _, chestName in ipairs(chestCatalog) do
-        State.ChestSelection[chestName] = true
-    end
     local chestDropdownCreated = pcall(function()
         rightSection:Dropdown({
             Name = "Select Chests (Multi-Select)",
@@ -15676,7 +17742,7 @@ function UIController.Init()
             Multi = true,
             Required = false,
             Options = chestCatalog,
-            Default = chestCatalog,
+            Default = {},
             Callback = function(value)
                 if typeof(value) == "string" then
                     State.ChestSelection[value] = (not State.ChestSelection[value]) or nil
@@ -16243,6 +18309,33 @@ function UIController.Init()
         end
     })
 
+    UIController.YhwachToggle = extrasRight:Toggle({
+        Name = "Auto Yhwach (Quincy Herald)",
+        Default = false,
+        Callback = function(value)
+            if UIController.IsSyncingUI then
+                return
+            end
+            if value then
+                Extras.Yhwach.GraceSeen = {}
+                Extras.Yhwach.BusyUntil = {}
+                Extras.Yhwach.Fails = 0
+                if not UIController.Restoring then
+                    Extras.Yhwach.data().Halt = ""
+                    Extras.Yhwach.save()
+                end
+                Extras.startLoop("AutoYhwachEnabled", Extras.Yhwach.runCycle)
+            else
+                Extras.Yhwach.stop(false)
+                Extras.Yhwach.status("stopped")
+            end
+        end
+    })
+    UIController.YhwachParagraph = extrasRight:Paragraph({
+        Header = "Yhwach Status",
+        Body = "Idle"
+    })
+
     extrasRight:Toggle({
         Name = "Auto Over Heaven Buff (The World B)",
         Default = false,
@@ -16250,6 +18343,26 @@ function UIController.Init()
             State.AutoOverHeavenEnabled = value == true
             Extras.OverHeaven.NextTryAt = 0
             Extras.OverHeaven.Fails = 0
+        end
+    })
+
+    extrasRight:Toggle({
+        Name = "Fast Mode / Lag Reducer (Mobile)",
+        Default = false,
+        Callback = function(value)
+            applyFastMode(value == true)
+        end
+    })
+
+    extrasRight:Toggle({
+        Name = "Mobile Toggle Button (Open/Close)",
+        Default = true,
+        Callback = function(value)
+            if UIController.MobileToggleGui then
+                UIController.MobileToggleGui.Enabled = value == true
+            elseif value == true then
+                UIController.createMobileToggle()
+            end
         end
     })
 
@@ -16304,6 +18417,7 @@ function UIController.Init()
     end)
 
     UIController.startStatusRefresh()
+    UIController.createMobileToggle()
 end
 
 getgenv().HubUI = UIController
@@ -16372,7 +18486,8 @@ Extras.Session = {
         { "AutoBankaiEnabled", "Auto Ichigo Bankai (Hollow Reaper)" },
         { "AutoSolemnEnabled", "Auto Solemn Lament (Griefbound Ferryman)" },
         { "AutoDungeonEnabled", "Auto Dungeon (enter + farm + replay)" },
-        { "AutoTwohEnabled", "Auto TWOH (Dio / Earthly Proofs)" }
+        { "AutoTwohEnabled", "Auto TWOH (Dio / Earthly Proofs)" },
+        { "AutoYhwachEnabled", "Auto Yhwach (Quincy Herald)" }
     }
 }
 
@@ -16913,27 +19028,14 @@ function Extras.watchCharacterRelease()
     end)
 end
 
-if not getgenv().HubDefaultResume then
-    for _, path in ipairs({ UIController.Settings.Path, Extras.Session.Path, Extras.Araya.SettingsPath, Extras.DungeonSettingsPath }) do
-        pcall(writefile, path, "{}")
-    end
-end
 UIController.Init()
 Extras.connectAntiAfk()
 Extras.OverHeaven.start()
 Extras.connectItemIndicators()
 Extras.watchCoffins()
-if getgenv().HubDefaultResume then
-    getgenv().HubDefaultResume = nil
-    Extras.resumeArayaAfterTeleport()
-    UIController.Restoring = true
-    Extras.resumeSession("values")
-    if not UIController.restoreSettings() then
-        Extras.resumeSession("flags")
-    end
-    UIController.Restoring = false
-end
-UIController.Settings.Dirty = true
+Extras.resumeArayaAfterTeleport()
+UIController.Restoring = false
+UIController.Settings.Dirty = false
 UIController.startSettingsSaver()
 Extras.watchCharacterRelease()
 Extras.startSessionSaver()
