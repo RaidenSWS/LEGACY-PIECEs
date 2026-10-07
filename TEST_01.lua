@@ -17299,28 +17299,71 @@ function UIController.startSettingsSaver()
     end)
 end
 
+local fastModeActive = false
+local fastModeConn = nil
+
+local function stripTexture(v)
+    pcall(function()
+        if v:IsA("Decal") or v:IsA("Texture") then
+            v.Transparency = 1
+            v.Texture = ""
+        elseif v:IsA("SurfaceAppearance") then
+            v:Destroy()
+        elseif v:IsA("MeshPart") then
+            v.TextureID = ""
+            v.Material = Enum.Material.SmoothPlastic
+            v.CastShadow = false
+            v.Reflectance = 0
+        elseif v:IsA("SpecialMesh") then
+            v.TextureId = ""
+        elseif v:IsA("BasePart") then
+            v.Material = Enum.Material.SmoothPlastic
+            v.CastShadow = false
+            v.Reflectance = 0
+        elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then
+            v.Enabled = false
+        elseif v:IsA("PostProcessEffect") or v:IsA("Atmosphere") or v:IsA("BloomEffect") or v:IsA("DepthOfFieldEffect") or v:IsA("SunRaysEffect") then
+            v.Enabled = false
+        end
+    end)
+end
+
 local function applyFastMode(enabled)
+    fastModeActive = enabled == true
+    if fastModeConn then
+        fastModeConn:Disconnect()
+        fastModeConn = nil
+    end
+    if not fastModeActive then
+        return
+    end
     pcall(function()
         local lightingService = cloneref(game:GetService("Lighting"))
-        if enabled then
-            lightingService.GlobalShadows = false
-            lightingService.FogEnd = 9e9
-            lightingService.ShadowSoftness = 0
-            local terrain = workspaceService:FindFirstChildOfClass("Terrain")
-            if terrain then
-                terrain.Decoration = false
-                terrain.WaterWaveSize = 0
-                terrain.WaterWaveSpeed = 0
-            end
-            for _, v in ipairs(workspaceService:GetDescendants()) do
-                if v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then
-                    v.Enabled = false
-                end
-            end
-            if setfpscap then
-                setfpscap(60)
+        lightingService.GlobalShadows = false
+        lightingService.FogEnd = 9e9
+        lightingService.ShadowSoftness = 0
+        for _, effect in ipairs(lightingService:GetChildren()) do
+            if effect:IsA("PostProcessEffect") or effect:IsA("Atmosphere") or effect:IsA("BloomEffect") or effect:IsA("DepthOfFieldEffect") or effect:IsA("SunRaysEffect") then
+                effect.Enabled = false
             end
         end
+        local terrain = workspaceService:FindFirstChildOfClass("Terrain")
+        if terrain then
+            terrain.Decoration = false
+            terrain.WaterWaveSize = 0
+            terrain.WaterWaveSpeed = 0
+        end
+        for _, v in ipairs(workspaceService:GetDescendants()) do
+            stripTexture(v)
+        end
+        if setfpscap then
+            setfpscap(60)
+        end
+        fastModeConn = workspaceService.DescendantAdded:Connect(function(v)
+            if fastModeActive then
+                stripTexture(v)
+            end
+        end)
     end)
 end
 
@@ -17420,6 +17463,16 @@ function UIController.createMobileToggle()
     button.InputEnded:Connect(finishDrag)
     screenGui.Parent = parent
     UIController.MobileToggleGui = screenGui
+    UIController.applyFastMode = applyFastMode
+    if not UIController.MobileToggleConnected then
+        UIController.MobileToggleConnected = true
+        localPlayer.CharacterAdded:Connect(function()
+            task.wait(1)
+            if not UIController.MobileToggleGui or not UIController.MobileToggleGui.Parent then
+                UIController.createMobileToggle()
+            end
+        end)
+    end
 end
 
 function UIController.Init()
@@ -18346,23 +18399,11 @@ function UIController.Init()
         end
     })
 
-    extrasRight:Toggle({
+    UIController.FastModeToggle = extrasRight:Toggle({
         Name = "Fast Mode / Lag Reducer (Mobile)",
         Default = false,
         Callback = function(value)
             applyFastMode(value == true)
-        end
-    })
-
-    extrasRight:Toggle({
-        Name = "Mobile Toggle Button (Open/Close)",
-        Default = true,
-        Callback = function(value)
-            if UIController.MobileToggleGui then
-                UIController.MobileToggleGui.Enabled = value == true
-            elseif value == true then
-                UIController.createMobileToggle()
-            end
         end
     })
 
