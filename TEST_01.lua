@@ -13905,10 +13905,6 @@ function Prestige.getOtherFarmMode()
         return "Auto Farm Level"
     elseif State.FarmQuestEnabled then
         return "Auto Farm Quest"
-    elseif State.BossFarmEnabled then
-        return "Auto Farm Bosses"
-    elseif State.UnlockEnabled then
-        return "Auto Unlock"
     end
     return nil
 end
@@ -13932,7 +13928,7 @@ function Prestige.isEntryMissing(entryType, entryName)
         return false
     end
     for _, entry in ipairs(progress) do
-        if entry.Type == entryType and entry.Name == entryName then
+        if entry.Type == entryType and (entryName == nil or entry.Name == entryName) then
             return not entry.Done
         end
     end
@@ -14283,8 +14279,10 @@ function Prestige.planRequirements(progress)
                 end
             elseif req.Type == "Material" then
                 plan.Material = plan.Material or req
-            elseif req.Type == "Level" or req.Type == "NPCKills" then
+            elseif req.Type == "Level" then
                 plan.Level = plan.Level or req
+            elseif req.Type == "NPCKills" then
+                plan.NPCKills = plan.NPCKills or req
             end
         end
     end
@@ -14599,6 +14597,34 @@ function Prestige.handleMissing(progress, missingText)
         return
     end
 
+    if inRealm and plan.Level then
+        Extras.requestDeepshark("prestige", false)
+        Prestige.activeWork = "leave " .. tostring(dungeonName)
+        Extras.Twoh.finishRun("LeftEarly")
+        Extras.Twoh.ReplayFailed = true
+        Extras.Twoh.leaveRealm("Prestige needs level first")
+        return
+    end
+
+    if plan.Level then
+        Extras.Twoh.releaseRealm("prestige")
+        Extras.requestDeepshark("prestige", false)
+        Prestige.activeWork = "level " .. tostring(plan.Level.Label)
+        local levelRequirement = plan.Level
+        local otherMode = Prestige.getOtherFarmMode()
+        if otherMode then
+            State.PrestigeStatus = otherMode .. " is running | prestige waits for " .. string.format("%s %d/%d", tostring(levelRequirement.Label), math.floor(levelRequirement.Current), math.floor(levelRequirement.Needed)) .. Prestige.ParkedSuffix
+            task.wait(0.5)
+        elseif acquireMovement("prestige") then
+            Prestige.handleLevelRequirement(levelRequirement)
+            releaseMovement("prestige")
+        else
+            State.PrestigeStatus = "Level " .. tostring(levelRequirement.Label) .. " pending | waiting for " .. tostring(Extras.PriorityRequest or movementOwner) .. " to finish"
+            task.wait(0.3)
+        end
+        return
+    end
+
     local dungeonWork = nil
     local blockedWorks = {}
     if not inRealm then
@@ -14668,6 +14694,8 @@ function Prestige.handleMissing(progress, missingText)
         Prestige.activeWork = "boss " .. Extras.DeepsharkName
     elseif plan.Material then
         Prestige.activeWork = "item " .. tostring(plan.Material.Name)
+    elseif plan.NPCKills then
+        Prestige.activeWork = "kills " .. tostring(plan.NPCKills.Label)
     else
         Prestige.activeWork = nil
     end
@@ -14696,14 +14724,14 @@ function Prestige.handleMissing(progress, missingText)
         else
             task.wait(0.3)
         end
-    elseif plan.Level then
-        local levelRequirement = plan.Level
+    elseif plan.NPCKills then
+        local npcRequirement = plan.NPCKills
         local otherMode = Prestige.getOtherFarmMode()
         if otherMode then
-            State.PrestigeStatus = otherMode .. " is running | prestige waits for " .. string.format("%s %d/%d", tostring(levelRequirement.Label), math.floor(levelRequirement.Current), math.floor(levelRequirement.Needed)) .. Prestige.ParkedSuffix
+            State.PrestigeStatus = otherMode .. " is running | prestige waits for " .. string.format("%s %d/%d", tostring(npcRequirement.Label), math.floor(npcRequirement.Current), math.floor(npcRequirement.Needed)) .. Prestige.ParkedSuffix
             task.wait(0.5)
         elseif acquireMovement("prestige") then
-            Prestige.handleLevelRequirement(levelRequirement)
+            Prestige.handleLevelRequirement(npcRequirement)
             releaseMovement("prestige")
         else
             task.wait(0.3)
@@ -17989,9 +18017,8 @@ function UIController.Init()
         end
     })
 
-    rightSection:Header({ Text = "Live Status" })
-    UIController.StatusParagraph = rightSection:Paragraph({
-        Header = "Hub Status",
+    UIController.PrestigeParagraph = leftSection:Paragraph({
+        Header = "Prestige Requirements",
         Body = "waiting for data"
     })
 
@@ -18154,12 +18181,6 @@ function UIController.Init()
     statRight:Header({ Text = "Stat Overview" })
     UIController.StatParagraph = statRight:Paragraph({
         Header = "Priority & Values",
-        Body = "waiting for data"
-    })
-
-    statRight:Header({ Text = "Prestige Requirements" })
-    UIController.PrestigeParagraph = statRight:Paragraph({
-        Header = "Next Prestige",
         Body = "waiting for data"
     })
 
