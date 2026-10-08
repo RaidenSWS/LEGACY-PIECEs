@@ -117,6 +117,13 @@ local State = {
     MobFarmSelection = {},
     MobFarmStatus = "Idle",
     ExtraStatus = "Idle",
+    AutoBountyEnabled = false,
+    BountyStatus = "Idle",
+    BountyTiers = { Mythic = true, Legendary = true, Rare = true },
+    BountyConstraints = {},
+    BountyAutoClaim = true,
+    BountyOnlyFallback = false,
+    BountyMaxTickets = 300,
     QuincyBanked = nil,
     QuincyBlockedAt = nil,
     UnlockTargets = {
@@ -401,7 +408,7 @@ for _, group in ipairs(bossCatalogGroups) do
 end
 
 local function isFarmActive()
-    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or pickupActive or prestigeActive or debugActive or (State.AutoWhaleEnabled and Extras.WhaleActive == true) or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or (State.AutoDeepsharkEnabled and movementOwner == "deepshark") or State.AutoArayaEnabled or State.AutoTwohEnabled or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or State.AutoYhwachEnabled or State.AutoTatsumakiEnabled or State.AutoIchigoEnabled or (State.AutoFishEnabled and movementOwner == "fishing")
+    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or pickupActive or prestigeActive or debugActive or (State.AutoWhaleEnabled and Extras.WhaleActive == true) or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or (State.AutoDeepsharkEnabled and movementOwner == "deepshark") or State.AutoArayaEnabled or State.AutoTwohEnabled or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or State.AutoYhwachEnabled or State.AutoTatsumakiEnabled or State.AutoIchigoEnabled or (State.AutoFishEnabled and movementOwner == "fishing") or (State.AutoBountyEnabled and Extras.Bounty ~= nil and Extras.Bounty.Working == true)
 end
 
 function Extras.otherFarmActive()
@@ -474,6 +481,9 @@ local movementOwnerActiveCheck = {
     end,
     mob = function()
         return State.MobFarmEnabled
+    end,
+    bounty = function()
+        return State.AutoBountyEnabled and Extras.Bounty ~= nil and Extras.Bounty.Working == true
     end
 }
 
@@ -491,6 +501,10 @@ local function acquireMovement(ownerName)
         eventPriority = nil
     end
     if eventPriority == "yhwach" and not State.AutoYhwachEnabled then
+        Extras.PriorityRequest = nil
+        eventPriority = nil
+    end
+    if eventPriority == "bounty" and not movementOwnerActiveCheck.bounty() then
         Extras.PriorityRequest = nil
         eventPriority = nil
     end
@@ -530,6 +544,11 @@ local function releaseMovement(ownerName)
     end
 end
 
+function Extras.priorityBlocksFarm()
+    local request = Extras.PriorityRequest
+    return request ~= nil and not (request == "bounty" and movementOwner == "bounty" and Extras.Bounty ~= nil and coroutine.running() == Extras.Bounty.ExecThread)
+end
+
 local function reacquireMovement(ownerName)
     local waited = 0
     while not acquireMovement(ownerName) and waited < 150 do
@@ -556,6 +575,8 @@ local function setFarmStatus(message)
         Extras.Twoh.status(message)
     elseif movementOwner == "yhwach" then
         Extras.Yhwach.FarmNote = tostring(message)
+    elseif movementOwner == "bounty" then
+        Extras.Bounty.Phase = tostring(message)
     elseif movementOwner == "whale" or movementOwner == "coffin" or movementOwner == "ambush" or movementOwner == "ambushonly" or movementOwner == "deepshark" or movementOwner == "araya" or movementOwner == "fireforce" then
         State.ExtraStatus = message
     elseif State.BossFarmEnabled then
@@ -4117,7 +4138,7 @@ local function engageMob(targetMobName, isFarmingActiveCondition, allowBoss)
         lockedTargetCFrame = nil
         Combat.ApproachRoot = enemyRoot
         local function enemyStillValid()
-            return isFarmingActiveCondition() and enemyHumanoid.Health > 0 and enemyRoot.Parent ~= nil and Extras.PriorityRequest == nil
+            return isFarmingActiveCondition() and enemyHumanoid.Health > 0 and enemyRoot.Parent ~= nil and not Extras.priorityBlocksFarm()
         end
         if (enemyTargetCFrame.Position - rootPart.Position).Magnitude > 400 then
             safeTravelTo(enemyTargetCFrame, function()
@@ -4137,7 +4158,7 @@ local function engageMob(targetMobName, isFarmingActiveCondition, allowBoss)
         end, enemyStillValid)
         Combat.ApproachRoot = nil
         rootPart = getRoot()
-        if not rootPart or enemyRoot.Parent == nil or enemyHumanoid.Health <= 0 or Extras.PriorityRequest ~= nil then
+        if not rootPart or enemyRoot.Parent == nil or enemyHumanoid.Health <= 0 or Extras.priorityBlocksFarm() then
             return
         end
     end
@@ -4283,13 +4304,13 @@ local function farmMobWithAnchor(mobName, isActiveCondition, allowBoss)
         local anchorPivot = anchor:GetPivot()
         local arrived = safeTravelTo(anchorPivot * CFrame.new(0, 0, 8), function()
             local currentRoot = getRoot()
-            return isActiveCondition() and currentRoot ~= nil and getTargetEnemy(mobName, currentRoot.Position, allowBoss) == nil and Extras.PriorityRequest == nil
+            return isActiveCondition() and currentRoot ~= nil and getTargetEnemy(mobName, currentRoot.Position, allowBoss) == nil and not Extras.priorityBlocksFarm()
         end)
 
         if not arrived then
             local currentRoot = getRoot()
-            if not currentRoot or not getTargetEnemy(mobName, currentRoot.Position, allowBoss) or Extras.PriorityRequest ~= nil then
-                if Extras.PriorityRequest == nil then
+            if not currentRoot or not getTargetEnemy(mobName, currentRoot.Position, allowBoss) or Extras.priorityBlocksFarm() then
+                if not Extras.priorityBlocksFarm() then
                     setFarmStatus("Movement blocked while travelling to " .. mobName)
                 end
                 task.wait(0.2)
@@ -4299,7 +4320,7 @@ local function farmMobWithAnchor(mobName, isActiveCondition, allowBoss)
         task.wait(0.4)
     end
 
-    if Extras.PriorityRequest ~= nil then
+    if Extras.priorityBlocksFarm() then
         return false
     end
     engageMob(mobName, isActiveCondition, allowBoss)
@@ -14295,6 +14316,9 @@ function Extras.stopAll()
     Extras.stopLoop("AutoSolemnEnabled", "solemn")
     Extras.stopLoop("AutoTatsumakiEnabled", "tatsumaki")
     Extras.stopLoop("AutoIchigoEnabled", "ichigo")
+    if Extras.Bounty then
+        pcall(Extras.Bounty.stop)
+    end
     Extras.DeepsharkRequesters = {}
     Extras.DeepsharkDelegated = false
     if getgenv().HubItemIndicatorConnections then
@@ -14305,7 +14329,7 @@ function Extras.stopAll()
         end
         getgenv().HubItemIndicatorConnections = nil
     end
-    for _, connectionName in ipairs({ "HubArayaConnection", "HubArayaTeleportConnection", "HubAutoDungeonConnection", "HubTwohDungeonAttrConnection", "HubTwohEnemyAddConnection" }) do
+    for _, connectionName in ipairs({ "HubArayaConnection", "HubArayaTeleportConnection", "HubAutoDungeonConnection", "HubTwohDungeonAttrConnection", "HubTwohEnemyAddConnection", "HubBountyConnection" }) do
         if getgenv()[connectionName] then
             pcall(function()
                 getgenv()[connectionName]:Disconnect()
@@ -16521,9 +16545,13 @@ function BossFarm.getDifficulty(entry)
         return nil
     end
 
-    local resolved = State.BossDifficulty or "Normal"
+    local wanted = State.BossDifficulty or "Normal"
+    if movementOwner == "bounty" and Extras.Bounty and Extras.Bounty.DifficultyOverride then
+        wanted = Extras.Bounty.DifficultyOverride
+    end
+    local resolved = wanted
     pcall(function()
-        resolved = summonDifficultyData.resolve(State.BossDifficulty) or resolved
+        resolved = summonDifficultyData.resolve(wanted) or resolved
     end)
 
     return resolved
@@ -17327,7 +17355,7 @@ function BossFarm.prepareAndKill(catalogItem, stopCondition, ownerName)
     end
 
     for _, shortfall in ipairs(shortfalls) do
-        if shortfall.Kind == "item" and shortfall.Item == "Boss Ticket" and (State.AutoBuyBossTicket or ownerName == "solemn" or ownerName == "bankai" or ownerName == "dungeon" or ownerName == "twoh") then
+        if shortfall.Kind == "item" and shortfall.Item == "Boss Ticket" and (State.AutoBuyBossTicket or ownerName == "solemn" or ownerName == "bankai" or ownerName == "dungeon" or ownerName == "twoh" or ownerName == "bounty") then
             local buyAmount = shortfall.Need - shortfall.Have
             if ownerName == "solemn" or ownerName == "bankai" or ownerName == "twoh" then
                 buyAmount = math.max(buyAmount, Extras.Solemn.TicketBatch, math.min(999, math.floor(getMoney() * 0.9 / 30000)))
@@ -17973,6 +18001,33 @@ function UIController.refreshStatus(includeHeavy)
         end)
     end
 
+    if typeof(State.ExtraStatus) == "string" and string.sub(State.ExtraStatus, 1, 8) == "Dungeon:" then
+        UIController.LastDungeonStatus = State.ExtraStatus
+    end
+
+    if UIController.BountyParagraph then
+        local bountyText = State.AutoBountyEnabled and tostring(State.BountyStatus) or ("Auto Bounty is off\n" .. tostring(State.BountyStatus))
+        pcall(function()
+            UIController.BountyParagraph:UpdateBody(bountyText)
+        end)
+    end
+
+    if UIController.DungeonParagraph then
+        local insideDungeon = nil
+        pcall(function()
+            insideDungeon = workspaceService:GetAttribute("Dungeon")
+        end)
+        local lines = {
+            "Auto Dungeon: " .. (State.AutoDungeonEnabled and "ON" or "off") .. " | target: " .. tostring(State.AutoDungeonTarget),
+            "Difficulty: " .. tostring(State.DungeonDifficulty) .. " | auto select: " .. (State.DungeonAutoDifficulty and "on" or "off") .. " | auto replay: " .. (State.DungeonAutoReplay and "on" or "off"),
+            "Inside dungeon: " .. (insideDungeon ~= nil and tostring(insideDungeon) or "no") .. " | wave " .. tostring(Extras.DungeonWave or "?") .. "/" .. tostring(Extras.DungeonMaxWave or "?"),
+            tostring(UIController.LastDungeonStatus or "Dungeon: idle")
+        }
+        pcall(function()
+            UIController.DungeonParagraph:UpdateBody(table.concat(lines, "\n"))
+        end)
+    end
+
 
 
     if UIController.StatParagraph then
@@ -18241,6 +18296,7 @@ function UIController.restoreSettings()
     for _, slotLabel in ipairs(UIController.StatSlotLabels or {}) do
         saved[slotLabel] = nil
     end
+    saved["Pause Auto Yhwach/TWOH For Bounty"] = nil
     local function apply(name, entry, value)
         pcall(function()
             if entry.Kind == "Toggle" then
@@ -18515,6 +18571,110 @@ function UIController.refreshLoadoutDropdowns()
     end
 end
 
+function UIController.buildBountyTab(tab)
+    local bountyLeft = tab:Section({ Side = "Left" })
+    local bountyRight = tab:Section({ Side = "Right" })
+    local bounty = Extras.Bounty
+
+    bountyLeft:Header({ Text = "Auto Bounty" })
+    UIController.BountyToggle = bountyLeft:Toggle({
+        Name = "Auto Bounty",
+        Default = false,
+        Callback = function(value)
+            if UIController.IsSyncingUI then
+                return
+            end
+            if value then
+                State.BountyStatus = "Auto Bounty: starting"
+                Extras.startLoop("AutoBountyEnabled", bounty.runCycle)
+            else
+                bounty.stop()
+            end
+        end
+    })
+
+    bountyLeft:Dropdown({
+        Name = "Bounty Tiers (Multi-Select)",
+        Multi = true,
+        Required = false,
+        Options = bounty.TierOrder,
+        Default = { "Mythic", "Legendary", "Rare" },
+        Callback = function(value)
+            if typeof(value) == "string" then
+                State.BountyTiers[value] = not State.BountyTiers[value]
+            else
+                local selected = UIController.parseMultiSelection(value)
+                for _, tierName in ipairs(bounty.TierOrder) do
+                    State.BountyTiers[tierName] = selected[tierName] == true
+                end
+            end
+            bounty.LastEvaluateAt = 0
+        end
+    })
+
+    local constraintOptions = bounty.modifierOptions()
+    local constraintDefaults = bounty.defaultModifierNames()
+    State.BountyConstraints = {}
+    for _, displayName in ipairs(constraintDefaults) do
+        State.BountyConstraints[displayName] = true
+    end
+    bountyLeft:Dropdown({
+        Name = "Bounty Constraints (Multi-Select)",
+        Multi = true,
+        Required = false,
+        Options = constraintOptions,
+        Default = constraintDefaults,
+        Callback = function(value)
+            if typeof(value) == "string" then
+                State.BountyConstraints[value] = not State.BountyConstraints[value]
+            else
+                local selected = UIController.parseMultiSelection(value)
+                for _, displayName in ipairs(constraintOptions) do
+                    State.BountyConstraints[displayName] = selected[displayName] == true
+                end
+            end
+            bounty.LastEvaluateAt = 0
+        end
+    })
+
+    bountyLeft:Toggle({
+        Name = "Auto Claim Bounty Rewards",
+        Default = true,
+        Callback = function(value)
+            State.BountyAutoClaim = value == true
+            bounty.LastEvaluateAt = 0
+        end
+    })
+
+    bountyLeft:Toggle({
+        Name = "Bounty Only When Out Of Charges",
+        Default = false,
+        Callback = function(value)
+            State.BountyOnlyFallback = value == true
+            bounty.LastEvaluateAt = 0
+        end
+    })
+
+    bountyLeft:Slider({
+        Name = "Max Boss Tickets Per Bounty",
+        Default = 300,
+        Minimum = 0,
+        Maximum = 1000,
+        DisplayMethod = "Value",
+        Precision = 0,
+        Callback = function(value)
+            State.BountyMaxTickets = math.floor(tonumber(value) or 300)
+            bounty.LastEvaluateAt = 0
+        end
+    })
+
+    bountyRight:Header({ Text = "Bounty Status" })
+    UIController.BountyParagraph = bountyRight:Paragraph({
+        Header = "Status",
+        Body = "Idle"
+    })
+end
+
 function UIController.Init()
     local questOptionsList = {}
     for qName, qInfo in pairs(questData.Main) do
@@ -18561,9 +18721,11 @@ function UIController.Init()
     local StatTab = TabGroup:Tab({ Name = "Stats", Image = "rbxassetid://10723407389" })
     local BossTab = TabGroup:Tab({ Name = "Bosses", Image = "rbxassetid://10723407389" })
     local UnlockTab = TabGroup:Tab({ Name = "Unlock", Image = "rbxassetid://10723407389" })
+    local DungeonTab = TabGroup:Tab({ Name = "Dungeon", Image = "rbxassetid://10723407389" })
+    UIController.BountyTab = TabGroup:Tab({ Name = "Bounty", Image = "rbxassetid://10723407389" })
     local ExtrasTab = TabGroup:Tab({ Name = "Extras", Image = "rbxassetid://10723407389" })
     UIController.Toggles = {}
-    for _, tab in ipairs({ MainTab, StatTab, BossTab, UnlockTab, ExtrasTab }) do
+    for _, tab in ipairs({ MainTab, StatTab, BossTab, UnlockTab, DungeonTab, UIController.BountyTab, ExtrasTab }) do
         UIController.trackToggles(tab)
     end
 
@@ -19413,12 +19575,13 @@ function UIController.Init()
         Body = "Idle"
     })
 
-    local extrasLeft = ExtrasTab:Section({ Side = "Left" })
-    local extrasRight = ExtrasTab:Section({ Side = "Right" })
+    UIController.DungeonLeft = DungeonTab:Section({ Side = "Left" })
+    UIController.DungeonRight = DungeonTab:Section({ Side = "Right" })
+    local dungeonLeft = UIController.DungeonLeft
 
     Extras.loadDungeonSettings()
-    extrasLeft:Header({ Text = "Dungeon" })
-    extrasLeft:Toggle({
+    dungeonLeft:Header({ Text = "Dungeon" })
+    dungeonLeft:Toggle({
         Name = "Auto Select Difficulty",
         Default = State.DungeonAutoDifficulty,
         Callback = function(value)
@@ -19433,7 +19596,7 @@ function UIController.Init()
             difficultyDefault = index
         end
     end
-    extrasLeft:Dropdown({
+    dungeonLeft:Dropdown({
         Name = "Dungeon Difficulty",
         Options = Extras.DungeonDifficulties,
         Default = difficultyDefault,
@@ -19443,7 +19606,7 @@ function UIController.Init()
         end
     })
 
-    extrasLeft:Toggle({
+    dungeonLeft:Toggle({
         Name = "Auto Replay Dungeon",
         Default = State.DungeonAutoReplay,
         Callback = function(value)
@@ -19453,7 +19616,7 @@ function UIController.Init()
     })
 
     local dungeonOptions = Extras.getDungeonOptions()
-    extrasLeft:Dropdown({
+    dungeonLeft:Dropdown({
         Name = "Auto Dungeon Target",
         Options = dungeonOptions,
         Default = table.find(dungeonOptions, State.AutoDungeonTarget) or 1,
@@ -19464,7 +19627,7 @@ function UIController.Init()
         end
     })
 
-    UIController.DungeonToggle = extrasLeft:Toggle({
+    UIController.DungeonToggle = dungeonLeft:Toggle({
         Name = "Auto Dungeon (enter + farm + replay)",
         Default = false,
         Callback = function(value)
@@ -19483,6 +19646,17 @@ function UIController.Init()
     if State.DungeonAutoDifficulty or State.DungeonAutoReplay then
         Extras.saveDungeonSettings()
     end
+
+    UIController.DungeonRight:Header({ Text = "Dungeon Status" })
+    UIController.DungeonParagraph = UIController.DungeonRight:Paragraph({
+        Header = "Status",
+        Body = "Idle"
+    })
+
+    UIController.buildBountyTab(UIController.BountyTab)
+
+    local extrasLeft = ExtrasTab:Section({ Side = "Left" })
+    local extrasRight = ExtrasTab:Section({ Side = "Right" })
 
     extrasLeft:Header({ Text = "Fishing" })
     UIController.FishToggle = extrasLeft:Toggle({
@@ -19647,7 +19821,8 @@ Extras.Session = {
         { "AutoDungeonEnabled", "Auto Dungeon (enter + farm + replay)" },
         { "AutoTwohEnabled", "Auto TWOH (Dio / Earthly Proofs)" },
         { "AutoYhwachEnabled", "Auto Yhwach (Quincy Herald)" },
-        { "AutoOverHeavenEnabled", "Auto Over Heaven Buff (The World B)" }
+        { "AutoOverHeavenEnabled", "Auto Over Heaven Buff (The World B)" },
+        { "AutoBountyEnabled", "Auto Bounty" }
     }
 }
 
@@ -19938,6 +20113,1281 @@ function Extras.connectAutoRejoin()
             end
         end
     end)
+end
+
+Extras.Bounty = {
+    ReadOnly = false,
+    LogPath = "LEGACY PIECE/bounty_log.txt",
+    Working = false,
+    NextAcceptAt = 0,
+    NextClaimAt = 0,
+    StallSeconds = 300,
+    FlawlessMargin = 0.85,
+    BlacklistSeconds = 3600,
+    DamageCapPct = { Rare = 100, Legendary = 70, Mythic = 45, Secret = 25 },
+    StatePath = "LEGACY PIECE/bounty_state.json",
+    MinSpacing = 3,
+    PollInterval = 5,
+    EvaluateInterval = 2,
+    InvokeTimeout = 6,
+    LastInvokeAt = 0,
+    LastEvaluateAt = 0,
+    FetchedAt = nil,
+    InFlight = false,
+    Dirty = true,
+    Fetches = 0,
+    FetchLog = {},
+    TierOrder = { "Secret", "Mythic", "Legendary", "Rare" },
+    TierRank = { Secret = 1, Mythic = 2, Legendary = 3, Rare = 4 },
+    TierCost = { Rare = 1, Legendary = 2, Mythic = 4, Secret = 8 },
+    ModifierOrder = { "TimeLimit", "NoRevive", "DamageCap", "Loadout", "Mechanic" },
+    FallbackNames = { TimeLimit = "Time Attack", NoRevive = "One Life", DamageCap = "Flawless", Loadout = "Set Loadout", Mechanic = "Perfect Dodge" },
+    DefaultModifiers = { "TimeLimit", "DamageCap", "NoRevive" },
+    Unsupported = { Loadout = "not supported yet", Mechanic = "never automated" },
+    Pools = { WorldBoss = true, SummonedBoss = true, FieldNPC = true, Dungeon = false },
+    FieldIslands = { FireForceCell = "7th Company Island", CursedAcademy = "Jujutsu Academy", GhoulAlley = "Tokyo Ghoul", FishmanRaiders = "Fishman Island" },
+    OwnedByLoop = { SolemnLament = "AutoSolemnEnabled", IchigoBankai = "AutoBankaiEnabled" },
+    AllowedRemotes = { RF_ContractGetState = true, RF_ContractClaim = true, RF_ContractAccept = true },
+    AcceptFails = {},
+    AcceptNote = nil,
+    Saved = nil
+}
+
+function Extras.Bounty.catalog()
+    local bounty = Extras.Bounty
+    if bounty.Catalog == nil then
+        local ok, result = pcall(function()
+            return require(configurationsFolder:FindFirstChild("ContractCatalog"))
+        end)
+        bounty.Catalog = (ok and typeof(result) == "table") and result or false
+    end
+    return bounty.Catalog or nil
+end
+
+function Extras.Bounty.modifierNames()
+    local bounty = Extras.Bounty
+    if bounty.NameById then
+        return bounty.NameById, bounty.IdByName
+    end
+    local names = {}
+    for id, fallback in pairs(bounty.FallbackNames) do
+        names[id] = fallback
+    end
+    local catalog = bounty.catalog()
+    if catalog and typeof(catalog.Modifiers) == "table" then
+        for _, modifier in ipairs(catalog.Modifiers) do
+            if typeof(modifier) == "table" and typeof(modifier.Id) == "string" and typeof(modifier.DisplayName) == "string" then
+                names[modifier.Id] = modifier.DisplayName
+            end
+        end
+    end
+    local ids = {}
+    for id, displayName in pairs(names) do
+        ids[displayName] = id
+    end
+    bounty.NameById = names
+    bounty.IdByName = ids
+    return names, ids
+end
+
+function Extras.Bounty.modifierOptions()
+    local bounty = Extras.Bounty
+    local names = bounty.modifierNames()
+    local options = {}
+    local listed = {}
+    for _, id in ipairs(bounty.ModifierOrder) do
+        table.insert(options, names[id])
+        listed[id] = true
+    end
+    for id, displayName in pairs(names) do
+        if not listed[id] then
+            table.insert(options, displayName)
+        end
+    end
+    return options
+end
+
+function Extras.Bounty.defaultModifierNames()
+    local bounty = Extras.Bounty
+    local names = bounty.modifierNames()
+    local list = {}
+    for _, id in ipairs(bounty.DefaultModifiers) do
+        table.insert(list, names[id])
+    end
+    return list
+end
+
+function Extras.Bounty.target(targetId)
+    local catalog = Extras.Bounty.catalog()
+    if catalog and typeof(catalog.Targets) == "table" then
+        for _, target in ipairs(catalog.Targets) do
+            if typeof(target) == "table" and target.Id == targetId then
+                return target
+            end
+        end
+    end
+    return nil
+end
+
+function Extras.Bounty.loadSaved()
+    local bounty = Extras.Bounty
+    local saved = nil
+    pcall(function()
+        saved = httpService:JSONDecode(readfile(bounty.StatePath))
+    end)
+    if typeof(saved) ~= "table" then
+        saved = {}
+    end
+    saved.Version = 1
+    saved.Accepted = typeof(saved.Accepted) == "table" and saved.Accepted or {}
+    saved.Blacklist = typeof(saved.Blacklist) == "table" and saved.Blacklist or {}
+    saved.SecondsPerKill = typeof(saved.SecondsPerKill) == "table" and saved.SecondsPerKill or {}
+    saved.TimeLimitSeconds = typeof(saved.TimeLimitSeconds) == "table" and saved.TimeLimitSeconds or {}
+    saved.Counters = typeof(saved.Counters) == "table" and saved.Counters or {}
+    bounty.Saved = saved
+    return saved
+end
+
+function Extras.Bounty.save()
+    local bounty = Extras.Bounty
+    if not bounty.Saved then
+        return
+    end
+    pcall(function()
+        writefile(bounty.StatePath, httpService:JSONEncode(bounty.Saved))
+    end)
+end
+
+function Extras.Bounty.invoke(remoteName, ...)
+    local bounty = Extras.Bounty
+    if not bounty.AllowedRemotes[remoteName] or (bounty.ReadOnly and remoteName ~= "RF_ContractGetState") then
+        return false, "blocked"
+    end
+    if bounty.InFlight then
+        return false, "busy"
+    end
+    local remote = remotesFolder:FindFirstChild(remoteName)
+    if not remote then
+        return false, "missing " .. remoteName
+    end
+    local args = table.pack(...)
+    local finished, ok, reply = false, false, nil
+    bounty.InFlight = true
+    bounty.LastInvokeAt = os.clock()
+    task.spawn(function()
+        ok, reply = pcall(function()
+            return remote:InvokeServer(table.unpack(args, 1, args.n))
+        end)
+        finished = true
+        bounty.InFlight = false
+    end)
+    local deadline = os.clock() + ((remoteName == "RF_ContractClaim" or remoteName == "RF_ContractAccept") and 15 or bounty.InvokeTimeout)
+    while not finished and os.clock() < deadline do
+        task.wait(0.1)
+    end
+    if not finished then
+        return false, "timeout"
+    end
+    return ok, reply
+end
+
+function Extras.Bounty.fetch()
+    local bounty = Extras.Bounty
+    if bounty.InFlight or os.clock() - bounty.LastInvokeAt < bounty.MinSpacing then
+        return false
+    end
+    bounty.Dirty = false
+    local ok, reply = bounty.invoke("RF_ContractGetState")
+    table.insert(bounty.FetchLog, os.clock())
+    while #bounty.FetchLog > 30 do
+        table.remove(bounty.FetchLog, 1)
+    end
+    if not ok or typeof(reply) ~= "table" or reply.Ok ~= true or typeof(reply.Board) ~= "table" or typeof(reply.Profile) ~= "table" then
+        bounty.LastError = typeof(reply) == "table" and tostring(reply.Code or "no Ok") or tostring(reply)
+        return false
+    end
+    bounty.Board = reply.Board
+    bounty.Profile = reply.Profile
+    bounty.Revision = reply.Revision
+    bounty.FetchedAt = os.clock()
+    bounty.Fetches = bounty.Fetches + 1
+    bounty.LastError = nil
+    return true
+end
+
+function Extras.Bounty.serverNow()
+    local now = os.time()
+    pcall(function()
+        now = workspaceService:GetServerTimeNow()
+    end)
+    return now
+end
+
+function Extras.Bounty.charges()
+    local profile = Extras.Bounty.Profile
+    if typeof(profile) ~= "table" then
+        return 0, 0, nil, 0
+    end
+    local reserved = 0
+    if typeof(profile.ReservedByActiveId) == "table" then
+        for _, amount in pairs(profile.ReservedByActiveId) do
+            reserved = reserved + (tonumber(amount) or 0)
+        end
+    end
+    local charges = tonumber(profile.Charges) or 0
+    local interval = tonumber(profile.ChargeInterval) or 0
+    local anchor = tonumber(profile.ChargeAnchor)
+    local cap = tonumber(profile.ChargeCap) or 0
+    local nextIn = nil
+    local room = math.max(0, cap - (charges + reserved))
+    if room > 0 and interval > 0 and anchor and anchor >= 0 then
+        local elapsed = Extras.Bounty.serverNow() - anchor
+        local regen = math.min(elapsed <= 0 and 0 or math.floor(elapsed / interval), room)
+        charges = charges + regen
+        if regen < room then
+            nextIn = anchor + (regen + 1) * interval - Extras.Bounty.serverNow()
+        end
+    end
+    return charges, reserved, nextIn, cap
+end
+
+function Extras.Bounty.clock(seconds)
+    seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+    if seconds >= 3600 then
+        return string.format("%d:%02d:%02d", math.floor(seconds / 3600), math.floor(seconds % 3600 / 60), seconds % 60)
+    end
+    return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+function Extras.Bounty.activeFor(definitionId)
+    local profile = Extras.Bounty.Profile
+    if typeof(profile) ~= "table" or typeof(profile.Actives) ~= "table" then
+        return nil, nil
+    end
+    for activeId, active in pairs(profile.Actives) do
+        local snapshot = typeof(active) == "table" and active.DefinitionSnapshot
+        if typeof(snapshot) == "table" and snapshot.DefinitionId == definitionId then
+            return activeId, active
+        end
+    end
+    return nil, nil
+end
+
+function Extras.Bounty.killsLeft(definition, active)
+    local goal = tonumber(definition.KillGoal) or tonumber(definition.Clears) or 1
+    local done = 0
+    if typeof(active) == "table" and typeof(active.Progress) == "table" then
+        if definition.KillGoal ~= nil and definition.Pool == "FieldNPC" then
+            done = tonumber(active.Progress.KillsDone) or 0
+        else
+            done = tonumber(active.Progress.ClearsDone) or 0
+        end
+    end
+    return math.max(0, goal - done), goal, done
+end
+
+function Extras.Bounty.modifierText(definition)
+    local names = Extras.Bounty.modifierNames()
+    local parts = {}
+    for _, modifierId in ipairs(typeof(definition.Modifiers) == "table" and definition.Modifiers or {}) do
+        table.insert(parts, names[modifierId] or tostring(modifierId))
+    end
+    return #parts > 0 and table.concat(parts, " + ") or "no modifiers"
+end
+
+function Extras.Bounty.describe(definition)
+    local target = Extras.Bounty.target(definition.TargetId)
+    local goalText = definition.KillGoal ~= nil and (tostring(definition.KillGoal) .. " kills") or (tostring(definition.Clears or 1) .. " clears")
+    local difficultyText = definition.MinimumDifficulty and (" " .. tostring(definition.MinimumDifficulty)) or ""
+    return string.format("%s %s [%s] %s%s", tostring(definition.Tier), target and target.DisplayName or tostring(definition.TargetId), Extras.Bounty.modifierText(definition), goalText, difficultyText)
+end
+
+function Extras.Bounty.bossCost(definition, target, kills)
+    local npcName = (typeof(target.NpcNames) == "table" and target.NpcNames[1]) or target.DisplayName or definition.TargetId
+    local catalogItem = BossFarm.getSummonEntry(npcName)
+    if not catalogItem or typeof(catalogItem.Entry) ~= "table" then
+        local alive = false
+        pcall(function()
+            alive = BossFarm.isBossAlive(npcName)
+        end)
+        if alive then
+            return { Tickets = 0, Money = 0, Route = "fight live " .. tostring(npcName) }
+        end
+        return nil, "no summon entry and " .. tostring(npcName) .. " is not alive"
+    end
+    local entry = catalogItem.Entry
+    local difficulty = nil
+    local difficultyOn = true
+    pcall(function()
+        difficultyOn = summonBossData.difficultyEnabled(entry) ~= false
+    end)
+    if difficultyOn then
+        difficulty = definition.MinimumDifficulty or "Normal"
+        pcall(function()
+            difficulty = summonDifficultyData.resolve(definition.MinimumDifficulty or "Normal") or difficulty
+        end)
+    end
+    local ticketsPer = entry.Tickets or 0
+    pcall(function()
+        ticketsPer = summonBossData.ticketCost(entry, difficulty) or ticketsPer
+    end)
+    local moneyPer = entry.Money or 0
+    pcall(function()
+        moneyPer = summonBossData.moneyCost(entry, difficulty) or moneyPer
+    end)
+    local ticketItem = entry.TicketItem or "Boss Ticket"
+    local result = { Tickets = 0, Money = moneyPer * kills, Route = "summon " .. tostring(catalogItem.Name) }
+    if ticketItem == "Boss Ticket" then
+        result.Tickets = ticketsPer * kills
+        local short = math.max(0, result.Tickets - getInventoryAmount("Boss Ticket"))
+        local ticketPrice = 30000
+        pcall(function()
+            local goldShopData = require(configurationsFolder:FindFirstChild("GoldShopData"))
+            ticketPrice = goldShopData.ByName["Boss Ticket"].Cost or ticketPrice
+        end)
+        result.Money = result.Money + short * ticketPrice
+        result.TicketsShort = short
+    else
+        local need = ticketsPer * kills
+        local have = getInventoryAmount(ticketItem)
+        if have < need then
+            return nil, string.format("%s %d/%d", ticketItem, math.floor(have), math.floor(need))
+        end
+    end
+    if typeof(entry.Extra) == "table" then
+        for _, extra in ipairs(entry.Extra) do
+            local per = extra.Amount or 1
+            pcall(function()
+                per = summonBossData.extraCost(entry, extra.Amount, difficulty) or per
+            end)
+            local have = getInventoryAmount(extra.Item)
+            if have < per * kills then
+                return nil, string.format("%s %d/%d", tostring(extra.Item), math.floor(have), math.floor(per * kills))
+            end
+        end
+    end
+    return result
+end
+
+function Extras.Bounty.evaluate(definition, availableCharges)
+    local bounty = Extras.Bounty
+    local verdict = { Eligible = false, Reason = "", Tickets = 0, Money = 0, Mode = "Rewarded" }
+    local profile = bounty.Profile or {}
+    local definitionId = definition.DefinitionId
+    local activeId, active = bounty.activeFor(definitionId)
+    local kills, goal, done = bounty.killsLeft(definition, active)
+    verdict.Kills = kills
+    if activeId then
+        verdict.Active = true
+        verdict.Reason = string.format("ACTIVE %d/%d", done, goal)
+        return verdict
+    end
+    if typeof(profile.AbandonedDefinitions) == "table" and (profile.AbandonedDefinitions[definitionId] ~= nil or table.find(profile.AbandonedDefinitions, definitionId)) then
+        verdict.Reason = "abandoned this rotation"
+        return verdict
+    end
+    for _, receipt in pairs(typeof(profile.PendingReceipts) == "table" and profile.PendingReceipts or {}) do
+        local summary = typeof(receipt) == "table" and receipt.DefinitionSummary
+        if typeof(summary) == "table" and summary.DefinitionId == definitionId then
+            verdict.Reason = "completed this rotation"
+            return verdict
+        end
+    end
+    for _, record in pairs(bounty.Saved and bounty.Saved.Accepted or {}) do
+        if typeof(record) == "table" and record.DefinitionId == definitionId and record.Gone then
+            verdict.Reason = "done this rotation"
+            return verdict
+        end
+    end
+    if not State.BountyTiers[definition.Tier] then
+        verdict.Reason = tostring(definition.Tier) .. " tier not selected"
+        return verdict
+    end
+    local names, ids = bounty.modifierNames()
+    local selectedIds = {}
+    for displayName, picked in pairs(State.BountyConstraints) do
+        if picked and ids[displayName] then
+            selectedIds[ids[displayName]] = true
+        end
+    end
+    for _, modifierId in ipairs(typeof(definition.Modifiers) == "table" and definition.Modifiers or {}) do
+        local displayName = names[modifierId] or tostring(modifierId)
+        if bounty.Unsupported[modifierId] then
+            verdict.Reason = displayName .. " " .. bounty.Unsupported[modifierId]
+            return verdict
+        end
+        if not selectedIds[modifierId] then
+            verdict.Reason = displayName .. " not selected"
+            return verdict
+        end
+    end
+    if not bounty.Pools[definition.Pool] then
+        verdict.Reason = tostring(definition.Pool) .. " contracts not supported yet"
+        return verdict
+    end
+    local loopFlag = bounty.OwnedByLoop[definition.TargetId]
+    if loopFlag and State[loopFlag] then
+        verdict.Reason = "owned by its own auto loop"
+        return verdict
+    end
+    local blacklist = bounty.Saved and bounty.Saved.Blacklist or {}
+    local blacklistKey = tostring(definition.TargetId) .. "|" .. table.concat(typeof(definition.Modifiers) == "table" and definition.Modifiers or {}, ",")
+    if (tonumber(blacklist[tostring(definitionId)]) or 0) > os.time() or (tonumber(blacklist[blacklistKey]) or 0) > os.time() then
+        verdict.Reason = "blacklisted after a failure"
+        return verdict
+    end
+    local target = bounty.target(definition.TargetId)
+    if not target then
+        verdict.Reason = "unknown target " .. tostring(definition.TargetId)
+        return verdict
+    end
+    if definition.Pool == "FieldNPC" then
+        local islandName = bounty.FieldIslands[definition.TargetId]
+        if not islandName then
+            verdict.Reason = "no known island for " .. tostring(target.DisplayName)
+            return verdict
+        end
+        local islandFound = false
+        pcall(function()
+            islandFound = workspaceService.Islands.Islands:FindFirstChild(islandName) ~= nil
+        end)
+        if not islandFound then
+            verdict.Reason = "island " .. islandName .. " not found"
+            return verdict
+        end
+        verdict.Route = "mobs at " .. islandName
+    else
+        local cost, costReason = bounty.bossCost(definition, target, kills)
+        if not cost then
+            verdict.Reason = costReason
+            return verdict
+        end
+        verdict.Tickets = cost.Tickets
+        verdict.Money = cost.Money
+        verdict.Route = cost.Route
+        if cost.Tickets > (tonumber(State.BountyMaxTickets) or 300) then
+            verdict.Reason = string.format("tickets %d > cap %d", cost.Tickets, tonumber(State.BountyMaxTickets) or 300)
+            return verdict
+        end
+        if cost.Money > getMoney() then
+            verdict.Reason = string.format("money %d > %d", math.floor(cost.Money), math.floor(getMoney()))
+            return verdict
+        end
+    end
+    local chargeCost = tonumber(definition.ChargeCost) or bounty.TierCost[definition.Tier] or 1
+    if availableCharges < chargeCost then
+        if State.BountyOnlyFallback then
+            verdict.Mode = "BountyOnly"
+        else
+            verdict.Reason = string.format("charges %d < %d", availableCharges, chargeCost)
+            return verdict
+        end
+    end
+    local hasTimeLimit = typeof(definition.Modifiers) == "table" and table.find(definition.Modifiers, "TimeLimit") ~= nil
+    if hasTimeLimit and bounty.Saved then
+        local perKill = tonumber(bounty.Saved.SecondsPerKill[definition.TargetId])
+        local limit = tonumber(bounty.Saved.TimeLimitSeconds[definition.Tier])
+        if perKill and limit then
+            if kills * perKill * 1.3 > limit then
+                verdict.Reason = string.format("Time Attack needs about %s > %s", bounty.clock(kills * perKill * 1.3), bounty.clock(limit))
+                return verdict
+            end
+        else
+            verdict.Note = "time unchecked"
+        end
+    end
+    verdict.Eligible = true
+    verdict.Reason = "ELIGIBLE"
+    return verdict
+end
+
+function Extras.Bounty.evaluateBoard()
+    local bounty = Extras.Bounty
+    local board = bounty.Board
+    local results = {}
+    if typeof(board) ~= "table" or typeof(board.Definitions) ~= "table" then
+        return results, nil
+    end
+    local available = bounty.charges()
+    local slots = {}
+    for slot in pairs(board.Definitions) do
+        table.insert(slots, slot)
+    end
+    table.sort(slots, function(a, b)
+        return (tonumber(a) or 0) < (tonumber(b) or 0)
+    end)
+    local best = nil
+    for order, slot in ipairs(slots) do
+        local definition = board.Definitions[slot]
+        if typeof(definition) == "table" then
+            local ok, verdict = pcall(bounty.evaluate, definition, available)
+            if not ok then
+                verdict = { Eligible = false, Reason = "evaluate error: " .. tostring(verdict), Tickets = 0, Money = 0 }
+            end
+            local row = { Slot = slot, Order = order, Definition = definition, Verdict = verdict }
+            table.insert(results, row)
+            if verdict.Eligible then
+                local rank = bounty.TierRank[definition.Tier] or 9
+                local bestRank = best and (bounty.TierRank[best.Definition.Tier] or 9) or math.huge
+                if not best or rank < bestRank or (rank == bestRank and (verdict.Tickets < best.Verdict.Tickets or (verdict.Tickets == best.Verdict.Tickets and order < best.Order))) then
+                    best = row
+                end
+            end
+        end
+    end
+    return results, best
+end
+
+function Extras.Bounty.buildStatus()
+    local bounty = Extras.Bounty
+    local lines = { "Phase: " .. tostring(bounty.Phase or "idle") }
+    if not bounty.Board then
+        table.insert(lines, bounty.LastError and ("GetState failed: " .. bounty.LastError) or "waiting for the first board fetch")
+        return table.concat(lines, "\n")
+    end
+    local available, reserved, nextIn, cap = bounty.charges()
+    table.insert(lines, string.format("Charges: %d/%d%s | reserved %d", available, cap, nextIn and (" | +1 in " .. bounty.clock(nextIn)) or " | full", reserved))
+    table.insert(lines, string.format("Board %s | rotates in %s | revision %s | fetched %ds ago%s", tostring(bounty.Board.RotationId), bounty.clock((tonumber(bounty.Board.EndsAt) or 0) - bounty.serverNow()), tostring(bounty.Revision), math.floor(os.clock() - (bounty.FetchedAt or os.clock())), bounty.LastError and (" | last error " .. bounty.LastError) or ""))
+    local profile = bounty.Profile or {}
+    local activeCount, receiptCount = 0, 0
+    for _, active in pairs(typeof(profile.Actives) == "table" and profile.Actives or {}) do
+        activeCount = activeCount + 1
+        local snapshot = typeof(active) == "table" and active.DefinitionSnapshot
+        if typeof(snapshot) == "table" then
+            local _, goal, done = bounty.killsLeft(snapshot, active)
+            table.insert(lines, string.format("Active: %s | %d/%d | %s left | %s", bounty.describe(snapshot), done, goal, bounty.clock((tonumber(active.ExpiresAt) or 0) - bounty.serverNow()), tostring(active.RewardMode)))
+        end
+    end
+    for _ in pairs(typeof(profile.PendingReceipts) == "table" and profile.PendingReceipts or {}) do
+        receiptCount = receiptCount + 1
+    end
+    if activeCount == 0 then
+        table.insert(lines, "Active: none")
+    end
+    table.insert(lines, string.format("Pending receipts: %d | auto claim %s", receiptCount, State.BountyAutoClaim and "on" or "off"))
+    local results, best = bounty.evaluateBoard()
+    bounty.LastResults = results
+    bounty.LastPick = best and best.Definition.DefinitionId or nil
+    bounty.LastPickRow = best
+    if best then
+        table.insert(lines, string.format("Would pick: #%s %s (%s, %d tickets)", tostring(best.Slot), bounty.describe(best.Definition), best.Verdict.Mode, best.Verdict.Tickets))
+    else
+        table.insert(lines, "Would pick: nothing eligible")
+    end
+    local protectedOk, protectedReason = pcall(bounty.protectedState)
+    if not protectedOk then
+        protectedReason = "check error: " .. tostring(protectedReason)
+    end
+    bounty.LastBlock = protectedReason
+    table.insert(lines, protectedReason and ("Takeover: would wait | " .. tostring(protectedReason)) or ("Takeover: safe gap now (owner " .. tostring(movementOwner or "free") .. ", request " .. tostring(Extras.PriorityRequest or "none") .. ")"))
+    for _, row in ipairs(results) do
+        local verdict = row.Verdict
+        local extra = ""
+        if verdict.Eligible then
+            extra = string.format(" (%d tickets, $%d%s)", verdict.Tickets or 0, math.floor(verdict.Money or 0), verdict.Note and (", " .. verdict.Note) or "")
+        end
+        table.insert(lines, string.format("#%s %s -> %s%s", tostring(row.Slot), bounty.describe(row.Definition), verdict.Reason, extra))
+    end
+    return table.concat(lines, "\n")
+end
+
+function Extras.Bounty.engagedBoss()
+    for _, root in ipairs({ lockedEnemyRoot, Combat.ApproachRoot }) do
+        local model = typeof(root) == "Instance" and root.Parent
+        local humanoid = model and model:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.Health > 0 and model.Parent ~= nil then
+            local resolved = model.Name
+            pcall(function()
+                resolved = BossFarm.resolveBossName(model.Name)
+            end)
+            if knownBossNames[model.Name] or knownBossNames[resolved] or BossFarm.getSummonEntry(model.Name) then
+                return model.Name
+            end
+        end
+    end
+    return nil
+end
+
+function Extras.Bounty.bossPending()
+    local yh = Extras.Yhwach
+    local yhwachOn = State.AutoYhwachEnabled or (State.BossFarmEnabled and (State.BossSelection["Yhwach (Summoned)"] == true or State.BossSelection["Yhwach Not Dungeon"] == true))
+    if yh and yhwachOn then
+        if yh.findKing and yh.findKing() then
+            return "Quincy King is alive"
+        end
+        for _, statueName in ipairs(yh.Route or {}) do
+            if yh.findBoss and yh.findBoss(statueName) then
+                return "statue " .. tostring(statueName) .. " is alive"
+            end
+        end
+    end
+    if State.BossFarmEnabled and BossFarm.getActiveTargets and BossFarm.isBossAlive then
+        for _, bossName in ipairs(BossFarm.getActiveTargets()) do
+            if bossName ~= "Yhwach (Summoned)" and bossName ~= "Yhwach Not Dungeon" and BossFarm.isBossAlive(bossName) then
+                return "selected boss " .. tostring(bossName) .. " is alive"
+            end
+        end
+    end
+    return nil
+end
+
+function Extras.Bounty.protectedState()
+    local request = Extras.PriorityRequest
+    local insideDungeon = workspaceService:GetAttribute("Dungeon")
+    if insideDungeon ~= nil then
+        return "inside dungeon " .. tostring(insideDungeon)
+    end
+    if movementOwner == "dungeon" then
+        return "dungeon run in progress"
+    end
+    if Extras.Twoh and Extras.Twoh.EnteringRealm then
+        return "TWOH is entering the realm"
+    end
+    if (Extras.RevertWatch.ExpectUntil or 0) > os.clock() then
+        return "teleport in progress"
+    end
+    if Extras.isMovementBlocked() then
+        return "movement blocked after a server pull-back"
+    end
+    if request == "pickupevent" or request == "whale" or request == "deepshark" then
+        return "event " .. request .. " holds priority"
+    end
+    if Extras.WhaleActive then
+        return "whale event running"
+    end
+    local pendingBoss = Extras.Bounty.bossPending()
+    if pendingBoss then
+        return pendingBoss
+    end
+    local bossName = Extras.Bounty.engagedBoss()
+    if bossName then
+        return "engaged boss " .. bossName .. " is alive"
+    end
+    if Extras.isCarryingCoffin() then
+        return "carrying a coffin"
+    end
+    if Extras.isCarryingHostage() or Extras.ActiveHostage ~= nil then
+        return "hostage task in progress"
+    end
+    if pickupActive then
+        return "pickup in progress"
+    end
+    if prestigeActive or Prestige.isHandlingRequirements() then
+        return "prestige requirement work"
+    end
+    if movementOwner == "araya" or movementOwner == "coffin" then
+        return tostring(movementOwner) .. " task owns movement"
+    end
+    return nil
+end
+
+function Extras.Bounty.connect()
+    if getgenv().HubBountyConnection then
+        pcall(function()
+            getgenv().HubBountyConnection:Disconnect()
+        end)
+        getgenv().HubBountyConnection = nil
+    end
+    local stateChanged = remotesFolder:FindFirstChild("RE_ContractStateChanged")
+    if not stateChanged or not stateChanged:IsA("RemoteEvent") then
+        return
+    end
+    getgenv().HubBountyConnection = stateChanged.OnClientEvent:Connect(function(payload)
+        local bounty = Extras.Bounty
+        if typeof(payload) == "table" and payload.Revision ~= nil and payload.Revision ~= bounty.Revision then
+            bounty.Dirty = true
+        end
+    end)
+end
+
+function Extras.Bounty.disconnect()
+    if getgenv().HubBountyConnection then
+        pcall(function()
+            getgenv().HubBountyConnection:Disconnect()
+        end)
+        getgenv().HubBountyConnection = nil
+    end
+end
+
+function Extras.Bounty.log(line)
+    local bounty = Extras.Bounty
+    local text = os.date("%Y-%m-%d %H:%M:%S") .. " " .. tostring(line) .. "\n"
+    local appended = false
+    pcall(function()
+        if isfile(bounty.LogPath) then
+            appendfile(bounty.LogPath, text)
+            appended = true
+        end
+    end)
+    if not appended then
+        pcall(function()
+            local previous = isfile(bounty.LogPath) and readfile(bounty.LogPath) or ""
+            if #previous > 400000 then
+                previous = string.sub(previous, -200000)
+            end
+            writefile(bounty.LogPath, previous .. text)
+        end)
+    end
+end
+
+function Extras.Bounty.encode(value)
+    local ok, text = pcall(function()
+        return httpService:JSONEncode(value)
+    end)
+    return ok and text or tostring(value)
+end
+
+function Extras.Bounty.bountyScore()
+    local value = nil
+    pcall(function()
+        value = localPlayer.Data.Bounty.Value
+    end)
+    return value
+end
+
+function Extras.Bounty.callRemote(remoteName, ...)
+    local bounty = Extras.Bounty
+    local waitUntil = os.clock() + 12
+    while (bounty.InFlight or os.clock() - bounty.LastInvokeAt < bounty.MinSpacing) and os.clock() < waitUntil do
+        task.wait(0.2)
+    end
+    local ok, reply = bounty.invoke(remoteName, ...)
+    bounty.log(remoteName .. " ok=" .. tostring(ok) .. " reply=" .. bounty.encode(reply))
+    bounty.Dirty = true
+    return ok, reply
+end
+
+function Extras.Bounty.replyCode(ok, reply)
+    if ok and typeof(reply) == "table" and reply.Ok == true then
+        return nil
+    end
+    if typeof(reply) == "table" then
+        return tostring(reply.Code or "NO_OK")
+    end
+    return tostring(reply or "error")
+end
+
+function Extras.Bounty.activeBlock(snapshot)
+    local bounty = Extras.Bounty
+    local names = bounty.modifierNames()
+    for _, modifierId in ipairs(typeof(snapshot.Modifiers) == "table" and snapshot.Modifiers or {}) do
+        if bounty.Unsupported[modifierId] then
+            return (names[modifierId] or tostring(modifierId)) .. " is " .. bounty.Unsupported[modifierId] .. ", finish it by hand"
+        end
+    end
+    if snapshot.Pool ~= "WorldBoss" and snapshot.Pool ~= "SummonedBoss" and snapshot.Pool ~= "FieldNPC" then
+        return tostring(snapshot.Pool) .. " contracts are not automated yet, finish it by hand"
+    end
+    return nil
+end
+
+function Extras.Bounty.ownActive()
+    local bounty = Extras.Bounty
+    local profile = bounty.Profile
+    bounty.SkippedActive = nil
+    if typeof(profile) ~= "table" or typeof(profile.Actives) ~= "table" or not bounty.Saved then
+        return nil, nil
+    end
+    for activeId, active in pairs(profile.Actives) do
+        local key = tostring(activeId)
+        local snapshot = typeof(active) == "table" and active.DefinitionSnapshot
+        if typeof(snapshot) == "table" then
+            local failure = bounty.Saved.Failed and bounty.Saved.Failed[key]
+            local block = bounty.activeBlock(snapshot)
+            if failure then
+                bounty.SkippedActive = bounty.describe(snapshot) .. " | stopped: " .. tostring(failure)
+            elseif block then
+                bounty.SkippedActive = bounty.describe(snapshot) .. " | " .. block
+            else
+                return activeId, active
+            end
+        end
+    end
+    return nil, nil
+end
+
+function Extras.Bounty.afterFetch()
+    local bounty = Extras.Bounty
+    local saved = bounty.Saved
+    local profile = bounty.Profile
+    if not saved or typeof(profile) ~= "table" then
+        return
+    end
+    saved.Failed = typeof(saved.Failed) == "table" and saved.Failed or {}
+    local actives = typeof(profile.Actives) == "table" and profile.Actives or {}
+    for activeId, active in pairs(actives) do
+        local key = tostring(activeId)
+        local snapshot = typeof(active) == "table" and active.DefinitionSnapshot
+        if typeof(snapshot) == "table" and not saved.Accepted[key] then
+            local remaining = (tonumber(active.ExpiresAt) or 0) - bounty.serverNow()
+            saved.Accepted[key] = { DefinitionId = snapshot.DefinitionId, TargetId = snapshot.TargetId, Tier = snapshot.Tier, SeenAt = os.time(), ExpiresIn = math.floor(remaining), Mode = active.RewardMode }
+            if remaining > 0 and typeof(snapshot.Modifiers) == "table" and table.find(snapshot.Modifiers, "TimeLimit") then
+                local previousLimit = tonumber(saved.TimeLimitSeconds[tostring(snapshot.Tier)]) or 0
+                saved.TimeLimitSeconds[tostring(snapshot.Tier)] = math.max(previousLimit, math.floor(remaining))
+            end
+            local keys = {}
+            for field in pairs(active) do
+                table.insert(keys, tostring(field))
+            end
+            table.sort(keys)
+            bounty.log("ACTIVE adopted id=" .. key .. " keys=" .. table.concat(keys, ",") .. " expiresIn=" .. tostring(math.floor(remaining)) .. " active=" .. bounty.encode(active))
+            bounty.save()
+        end
+        local record = saved.Accepted[key]
+        if record and typeof(snapshot) == "table" then
+            local _, goal, done = bounty.killsLeft(snapshot, active)
+            local progressText = bounty.encode(active.Progress)
+            if record.LastProgress ~= progressText then
+                bounty.log("PROGRESS id=" .. key .. " " .. tostring(done) .. "/" .. tostring(goal) .. " progress=" .. progressText)
+                if record.LastDone and done > record.LastDone and record.LastProgressAt then
+                    local perKill = (os.time() - record.LastProgressAt) / (done - record.LastDone)
+                    local previous = tonumber(saved.SecondsPerKill[tostring(snapshot.TargetId)])
+                    saved.SecondsPerKill[tostring(snapshot.TargetId)] = previous and (previous * 0.6 + perKill * 0.4) or perKill
+                end
+                if record.LastDone == nil or done ~= record.LastDone then
+                    record.LastProgressAt = os.time()
+                end
+                bounty.LastProgressClock = os.clock()
+                record.LastDone = done
+                record.LastProgress = progressText
+                bounty.save()
+            end
+        end
+    end
+    for key, record in pairs(saved.Accepted) do
+        if actives[key] == nil and actives[tonumber(key) or key] == nil and not record.Gone then
+            record.Gone = os.time()
+            local receiptText = bounty.encode(profile.PendingReceipts)
+            bounty.log("ACTIVE gone id=" .. tostring(key) .. " failed=" .. tostring(saved.Failed[key]) .. " receipts=" .. receiptText)
+            if bounty.CurrentActiveId and tostring(bounty.CurrentActiveId) == key then
+                bounty.CurrentActiveId = nil
+            end
+            bounty.save()
+        end
+    end
+end
+
+function Extras.Bounty.claimReceipts()
+    local bounty = Extras.Bounty
+    local profile = bounty.Profile
+    if typeof(profile) ~= "table" or typeof(profile.PendingReceipts) ~= "table" then
+        return
+    end
+    bounty.ClaimRetry = bounty.ClaimRetry or {}
+    for receiptId, receipt in pairs(profile.PendingReceipts) do
+        local key = tostring(receiptId)
+        local delivery = typeof(receipt) == "table" and receipt.Delivery
+        if typeof(delivery) == "table" and delivery.Status ~= "Delivered" and os.clock() >= (bounty.ClaimRetry[key] or 0) then
+            local before = bounty.bountyScore()
+            bounty.log("CLAIM try receipt=" .. key .. " receipt=" .. bounty.encode(receipt) .. " bounty=" .. tostring(before))
+            local ok, reply = bounty.callRemote("RF_ContractClaim", receiptId, httpService:GenerateGUID(false))
+            local code = bounty.replyCode(ok, reply)
+            if code == nil or code == "RECEIPT_ALREADY_DELIVERED" then
+                bounty.ClaimRetry[key] = os.clock() + 30
+                bounty.Saved.Counters.Claims = (tonumber(bounty.Saved.Counters.Claims) or 0) + 1
+                bounty.save()
+                task.delay(2, function()
+                    bounty.log("CLAIM done receipt=" .. key .. " bounty " .. tostring(before) .. " -> " .. tostring(bounty.bountyScore()))
+                end)
+            elseif code == "COMMIT_PENDING" then
+                bounty.ClaimRetry[key] = os.clock() + 3
+            else
+                bounty.ClaimRetry[key] = os.clock() + 30
+            end
+            return
+        end
+    end
+end
+
+function Extras.Bounty.releaseAll()
+    local bounty = Extras.Bounty
+    bounty.Working = false
+    bounty.DifficultyOverride = nil
+    bounty.WaitSince = nil
+    if Extras.PriorityRequest == "bounty" then
+        Extras.PriorityRequest = nil
+    end
+    if movementOwner == "bounty" then
+        stopTween()
+        Combat.ApproachRoot = nil
+        lockedEnemyRoot = nil
+        lockedTargetCFrame = nil
+        setTargetBox(nil)
+    end
+    releaseMovement("bounty")
+end
+
+function Extras.Bounty.claimPriority()
+    local bounty = Extras.Bounty
+    local request = Extras.PriorityRequest
+    if request ~= nil and request ~= "bounty" then
+        local checker = movementOwnerActiveCheck[request]
+        local stale = checker ~= nil and not checker()
+        if not stale and (request == "pickupevent" or request == "whale" or request == "deepshark") then
+            return false, "event " .. request .. " holds priority"
+        end
+        if not stale and request == "twoh" and workspaceService:GetAttribute("Dungeon") ~= nil then
+            return false, "TWOH realm run"
+        end
+    end
+    bounty.Working = true
+    Extras.PriorityRequest = "bounty"
+    if acquireMovement("bounty") then
+        bounty.WaitSince = nil
+        return true
+    end
+    bounty.WaitSince = bounty.WaitSince or os.clock()
+    if os.clock() - bounty.WaitSince > 1 and movementOwner ~= "dungeon" then
+        stopTween()
+        Extras.clearCombatLocks()
+        setTargetBox(nil)
+        movementOwner = nil
+        if acquireMovement("bounty") then
+            bounty.WaitSince = nil
+            return true
+        end
+    end
+    return false, "taking over from " .. tostring(movementOwner)
+end
+
+function Extras.Bounty.watchCharacter()
+    local bounty = Extras.Bounty
+    local character = localPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or bounty.WatchedHumanoid == humanoid then
+        return
+    end
+    bounty.unwatch()
+    bounty.WatchedHumanoid = humanoid
+    bounty.LastHealth = humanoid.Health
+    local connections = {}
+    table.insert(connections, humanoid.HealthChanged:Connect(function(health)
+        if bounty.Working and bounty.CurrentActiveId then
+            local drop = (bounty.LastHealth or health) - health
+            if drop > 0 then
+                bounty.DamageTaken = (bounty.DamageTaken or 0) + drop
+            end
+        end
+        bounty.LastHealth = health
+    end))
+    table.insert(connections, humanoid.Died:Connect(function()
+        if bounty.Working and bounty.CurrentActiveId then
+            bounty.DeathsDuring = (bounty.DeathsDuring or 0) + 1
+            bounty.log("DEATH during contract " .. tostring(bounty.CurrentActiveId))
+        end
+    end))
+    getgenv().HubBountyCharConnections = connections
+end
+
+function Extras.Bounty.unwatch()
+    for _, connection in ipairs(getgenv().HubBountyCharConnections or {}) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+    getgenv().HubBountyCharConnections = nil
+    Extras.Bounty.WatchedHumanoid = nil
+end
+
+function Extras.Bounty.guardCheck(activeId, active, snapshot)
+    local bounty = Extras.Bounty
+    local modifiers = typeof(snapshot.Modifiers) == "table" and snapshot.Modifiers or {}
+    if table.find(modifiers, "NoRevive") and (bounty.DeathsDuring or 0) > 0 then
+        return "One Life: died during the contract"
+    end
+    if table.find(modifiers, "DamageCap") then
+        local _, humanoid = getRoot()
+        local maxHealth = humanoid and humanoid.MaxHealth or 0
+        local pct = bounty.DamageCapPct[snapshot.Tier] or 100
+        pcall(function()
+            pct = bounty.catalog().ParametersByTier[snapshot.Tier].DamageCapPct or pct
+        end)
+        local cap = maxHealth * pct / 100
+        if maxHealth > 0 and (bounty.DamageTaken or 0) >= cap * bounty.FlawlessMargin then
+            return string.format("Flawless: took %d of the %d damage cap", math.floor(bounty.DamageTaken or 0), math.floor(cap))
+        end
+    end
+    local remaining = (tonumber(active.ExpiresAt) or math.huge) - bounty.serverNow()
+    if table.find(modifiers, "TimeLimit") then
+        if remaining <= 0 then
+            return "Time Attack: time ran out"
+        end
+        local perKill = tonumber(bounty.Saved.SecondsPerKill[tostring(snapshot.TargetId)])
+        local kills = bounty.killsLeft(snapshot, active)
+        if perKill and kills > 0 and kills * perKill > remaining then
+            return string.format("Time Attack: %d kills need about %s, %s left", kills, bounty.clock(kills * perKill), bounty.clock(remaining))
+        end
+    end
+    if bounty.Working and bounty.WorkingSince and os.clock() - math.max(bounty.WorkingSince, bounty.LastProgressClock or 0) > bounty.StallSeconds then
+        return "no progress for " .. tostring(bounty.StallSeconds) .. "s"
+    end
+    return nil
+end
+
+function Extras.Bounty.fail(activeId, active, reason)
+    local bounty = Extras.Bounty
+    local key = tostring(activeId)
+    local snapshot = active.DefinitionSnapshot or {}
+    bounty.Saved.Failed = bounty.Saved.Failed or {}
+    bounty.Saved.Failed[key] = reason
+    bounty.Saved.Blacklist[tostring(snapshot.DefinitionId)] = os.time() + bounty.BlacklistSeconds
+    bounty.Saved.Blacklist[tostring(snapshot.TargetId) .. "|" .. table.concat(typeof(snapshot.Modifiers) == "table" and snapshot.Modifiers or {}, ",")] = os.time() + bounty.BlacklistSeconds
+    bounty.save()
+    bounty.log("GUARD breach id=" .. key .. " reason=" .. tostring(reason) .. " active=" .. bounty.encode(active))
+    bounty.releaseAll()
+    bounty.Phase = "STOPPED " .. bounty.describe(snapshot) .. " | " .. tostring(reason) .. " | the contract is still active, abandon or finish it by hand"
+    bounty.CurrentActiveId = nil
+end
+
+function Extras.Bounty.stillWorking()
+    local bounty = Extras.Bounty
+    return State.AutoBountyEnabled and bounty.Working and movementOwner == "bounty" and Extras.PriorityRequest == "bounty"
+end
+
+function Extras.Bounty.stepBoss(snapshot)
+    local bounty = Extras.Bounty
+    local target = bounty.target(snapshot.TargetId)
+    local npcName = (target and typeof(target.NpcNames) == "table" and target.NpcNames[1]) or (target and target.DisplayName) or tostring(snapshot.TargetId)
+    local catalogItem = BossFarm.getSummonEntry(npcName)
+    bounty.DifficultyOverride = snapshot.MinimumDifficulty or "Normal"
+    if catalogItem then
+        bounty.Phase = "boss " .. tostring(catalogItem.Name) .. " (" .. tostring(bounty.DifficultyOverride) .. ")"
+        BossFarm.prepareAndKill(catalogItem, bounty.stillWorking, "bounty")
+        return
+    end
+    if BossFarm.isBossAlive(npcName) then
+        bounty.Phase = "fighting live " .. npcName
+        farmMobWithAnchor(npcName, bounty.stillWorking, true)
+        return
+    end
+    bounty.Phase = "waiting for " .. npcName .. " to spawn (no summon)"
+    task.wait(1)
+end
+
+function Extras.Bounty.stepField(snapshot)
+    local bounty = Extras.Bounty
+    local target = bounty.target(snapshot.TargetId)
+    local names = (target and typeof(target.NpcNames) == "table") and target.NpcNames or {}
+    local rootPart = getRoot()
+    if not rootPart or #names == 0 then
+        task.wait(0.5)
+        return
+    end
+    local bestName, bestDistance = nil, math.huge
+    for _, mobName in ipairs(names) do
+        local enemy = getTargetEnemy(mobName, rootPart.Position, false)
+        local enemyRoot = enemy and enemy:FindFirstChild("HumanoidRootPart")
+        if enemyRoot then
+            local distance = (enemyRoot.Position - rootPart.Position).Magnitude
+            if distance < bestDistance then
+                bestName, bestDistance = mobName, distance
+            end
+        end
+    end
+    if bestName then
+        if bestName ~= bounty.LastFieldMob then
+            lastKnownMobCFrame = nil
+            lockedEnemyRoot = nil
+            bounty.LastFieldMob = bestName
+        end
+        bounty.Phase = "farming " .. bestName
+        farmMobWithAnchor(bestName, bounty.stillWorking, false)
+        return
+    end
+    local function noneVisible()
+        local currentRoot = getRoot()
+        if not bounty.stillWorking() or not currentRoot then
+            return false
+        end
+        for _, mobName in ipairs(names) do
+            if getTargetEnemy(mobName, currentRoot.Position, false) then
+                return false
+            end
+        end
+        return true
+    end
+    for _, mobName in ipairs(names) do
+        local spawnPosition = Extras.MobSpawnCache[mobName]
+        if spawnPosition and (spawnPosition - rootPart.Position).Magnitude > 60 then
+            bounty.Phase = "travelling to " .. mobName .. " spawn"
+            Extras.clearCombatLocks()
+            safeTravelTo(CFrame.new(spawnPosition + Vector3.new(0, 8, 0)), noneVisible)
+            return
+        end
+    end
+    local islandName = bounty.FieldIslands[snapshot.TargetId]
+    local island = nil
+    pcall(function()
+        island = workspaceService.Islands.Islands:FindFirstChild(islandName)
+    end)
+    if island and getNearestIslandName(rootPart.Position) ~= islandName then
+        bounty.Phase = "travelling to " .. islandName
+        Extras.clearCombatLocks()
+        teleportToIsland(islandName, island:GetPivot().Position)
+        return
+    end
+    bounty.Phase = "on " .. tostring(islandName) .. " | waiting for " .. table.concat(names, "/")
+    task.wait(1)
+end
+
+function Extras.Bounty.tryAccept()
+    local bounty = Extras.Bounty
+    local pick = bounty.LastPickRow
+    if not pick or typeof(pick.Verdict) ~= "table" or not pick.Verdict.Eligible or os.clock() < bounty.NextAcceptAt then
+        return false
+    end
+    local definition = pick.Definition
+    local definitionId = definition.DefinitionId
+    local block = bounty.protectedState()
+    if block then
+        bounty.Phase = "will accept " .. bounty.describe(definition) .. " | waiting: " .. tostring(block)
+        return true
+    end
+    local mode = pick.Verdict.Mode or "Rewarded"
+    bounty.NextAcceptAt = os.clock() + 15
+    bounty.Phase = "accepting " .. bounty.describe(definition) .. " (" .. mode .. ")"
+    local ok, reply = bounty.callRemote("RF_ContractAccept", definitionId, mode, httpService:GenerateGUID(false))
+    local code = bounty.replyCode(ok, reply)
+    bounty.LastPickRow = nil
+    bounty.log("ACCEPT definition=" .. tostring(definitionId) .. " mode=" .. mode .. " code=" .. tostring(code))
+    if code == nil then
+        bounty.AcceptNote = nil
+        bounty.AcceptFails[tostring(definitionId)] = nil
+        if bounty.Saved then
+            bounty.Saved.Counters.Accepts = (tonumber(bounty.Saved.Counters.Accepts) or 0) + 1
+            bounty.save()
+        end
+        return true
+    end
+    local key = tostring(definitionId)
+    bounty.AcceptFails[key] = (bounty.AcceptFails[key] or 0) + 1
+    bounty.AcceptNote = "last accept failed: " .. code
+    bounty.NextAcceptAt = os.clock() + ((code == "timeout") and 15 or 30)
+    if bounty.AcceptFails[key] >= 3 and bounty.Saved then
+        bounty.Saved.Blacklist[key] = os.time() + bounty.BlacklistSeconds
+        bounty.AcceptFails[key] = nil
+        bounty.log("ACCEPT blacklisted definition=" .. key .. " after 3 failures")
+        bounty.save()
+    end
+    return false
+end
+
+function Extras.Bounty.work()
+    local bounty = Extras.Bounty
+    if not bounty.Board or not bounty.Saved then
+        return
+    end
+    if State.BountyAutoClaim then
+        bounty.claimReceipts()
+    end
+    local activeId, active = bounty.ownActive()
+    if not activeId then
+        if bounty.Working then
+            bounty.releaseAll()
+            bounty.log("RELEASE no own active contract")
+        end
+        bounty.CurrentActiveId = nil
+        if bounty.tryAccept() then
+            return
+        end
+        local pick = bounty.LastPickRow
+        local pickText = pick and ("#" .. tostring(pick.Slot) .. " " .. bounty.describe(pick.Definition)) or "nothing eligible"
+        local skippedText = bounty.SkippedActive and (" | active not automated: " .. bounty.SkippedActive) or ""
+        local noteText = bounty.AcceptNote and (" | " .. bounty.AcceptNote) or ""
+        bounty.Phase = "No contract running (hub pick: " .. pickText .. ")" .. noteText .. skippedText
+        return
+    end
+    if tostring(bounty.CurrentActiveId) ~= tostring(activeId) then
+        bounty.CurrentActiveId = activeId
+        bounty.DamageTaken = 0
+        bounty.DeathsDuring = 0
+        bounty.WorkingSince = nil
+        bounty.LastProgressClock = os.clock()
+    end
+    local snapshot = active.DefinitionSnapshot
+    bounty.watchCharacter()
+    local breach = bounty.guardCheck(activeId, active, snapshot)
+    if breach then
+        bounty.fail(activeId, active, breach)
+        return
+    end
+    if not bounty.Working then
+        local block = bounty.protectedState()
+        if block then
+            bounty.Phase = "contract active | waiting: " .. block
+            return
+        end
+    end
+    local claimed, why = bounty.claimPriority()
+    if not claimed then
+        if string.find(tostring(why), "event", 1, true) or string.find(tostring(why), "realm", 1, true) then
+            bounty.releaseAll()
+        end
+        bounty.Phase = "contract active | " .. tostring(why)
+        task.wait(0.3)
+        return
+    end
+    bounty.WorkingSince = bounty.WorkingSince or os.clock()
+    local _, humanoid = getRoot()
+    if not humanoid or humanoid.Health <= 0 then
+        bounty.Phase = "waiting for respawn"
+        task.wait(0.5)
+        return
+    end
+    if snapshot.Pool == "FieldNPC" then
+        bounty.stepField(snapshot)
+    elseif snapshot.Pool == "WorldBoss" or snapshot.Pool == "SummonedBoss" then
+        bounty.stepBoss(snapshot)
+    else
+        bounty.fail(activeId, active, tostring(snapshot.Pool) .. " pool not supported")
+    end
+end
+
+function Extras.Bounty.runCycle()
+    local bounty = Extras.Bounty
+    bounty.ExecThread = coroutine.running()
+    if not bounty.Saved then
+        bounty.loadSaved()
+        bounty.save()
+    end
+    if not getgenv().HubBountyConnection then
+        bounty.connect()
+    end
+    local sinceInvoke = os.clock() - bounty.LastInvokeAt
+    local fetched = false
+    if (bounty.Dirty and sinceInvoke >= bounty.MinSpacing) or sinceInvoke >= bounty.PollInterval then
+        fetched = bounty.fetch()
+        if fetched then
+            pcall(bounty.afterFetch)
+        end
+    end
+    if fetched or os.clock() - bounty.LastEvaluateAt >= bounty.EvaluateInterval then
+        bounty.LastEvaluateAt = os.clock()
+        local ok, text = pcall(bounty.buildStatus)
+        State.BountyStatus = ok and text or ("Status error: " .. tostring(text))
+    end
+    if bounty.ReadOnly then
+        task.wait(0.5)
+        return
+    end
+    local ok, errorMessage = pcall(bounty.work)
+    if not ok then
+        bounty.Phase = "error: " .. tostring(errorMessage)
+        bounty.log("ERROR " .. tostring(errorMessage))
+        task.wait(1)
+    end
+    if not bounty.Working then
+        task.wait(0.5)
+    end
+end
+
+function Extras.Bounty.stop()
+    Extras.stopLoop("AutoBountyEnabled", "bounty")
+    Extras.Bounty.releaseAll()
+    Extras.Bounty.unwatch()
+    Extras.Bounty.disconnect()
+    Extras.Bounty.save()
+    State.BountyStatus = "Auto Bounty: stopped"
 end
 
 Extras.OverHeaven = { StyleName = "The World", Key = "B", Busy = false, NextTryAt = 0, Fails = 0 }
