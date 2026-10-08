@@ -1,3 +1,4 @@
+getgenv().HubAutoLoaded = nil
 local playersService = cloneref(game:GetService("Players"))
 local replicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
 local workspaceService = cloneref(game:GetService("Workspace"))
@@ -109,7 +110,6 @@ local State = {
     AutoTatsumakiEnabled = false,
     AutoTraitEnabled = false,
     TraitTargets = {},
-    AutoCoffinEnabled = false,
     AutoAmbushEnabled = false,
     AutoAmbushOnlyEnabled = false,
     AutoFireForceTrialEnabled = false,
@@ -365,8 +365,7 @@ BossFarm.Quincy = {
 local bossCatalogGroups = {
     { Label = "Summon", Names = { "One-Eyed Owl", "Cid Kagenou", "The Red Mist", "Demon Infernal", "Dio" } },
     { Label = "Whisperer", Names = { "Sosuke Aizen", "Ichigo Kurosaki", "Ichigo Kurosaki Bankai", "Satoru Gojo", "Ryomen Sukuna", "Garou", "Blast", "Flashy Flash", "Ken Kaneki", "Akaza", "Chihora", "Solemn Lament", "Ichigo True Bankai", "Chad", "Undyne", "Fishman Captain" } },
-    { Label = "Quincy", Names = { "As Nodt", "Askin Nakk Le Vaar", "Bambietta Basterbine", "Gremmy Thoumeaux", "Jugram Haschwalth" } },
-    { Label = "World/Raid", Names = { "Yhwach (Global Boss)" } }
+    { Label = "Quincy", Names = { "As Nodt", "Askin Nakk Le Vaar", "Bambietta Basterbine", "Gremmy Thoumeaux", "Jugram Haschwalth" } }
 }
 
 local prestigeKillBossMap = {
@@ -388,7 +387,6 @@ local prestigeKillBossMap = {
 local knownBossNames = {
     ["Yhwach"] = true,
     ["Yhwach Not Dungeon"] = true,
-    ["Yhwach (Global Boss)"] = true,
     ["Yhwach (Summoned)"] = true,
     ["The Dihui Star, Araya"] = true,
     ["Rien"] = true,
@@ -403,11 +401,11 @@ for _, group in ipairs(bossCatalogGroups) do
 end
 
 local function isFarmActive()
-    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or pickupActive or prestigeActive or debugActive or (State.AutoWhaleEnabled and Extras.WhaleActive == true) or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or (State.AutoDeepsharkEnabled and movementOwner == "deepshark") or State.AutoArayaEnabled or State.AutoTwohEnabled or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or State.AutoYhwachEnabled or State.AutoTatsumakiEnabled or State.AutoIchigoEnabled or (State.AutoFishEnabled and movementOwner == "fishing")
+    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or pickupActive or prestigeActive or debugActive or (State.AutoWhaleEnabled and Extras.WhaleActive == true) or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or (State.AutoDeepsharkEnabled and movementOwner == "deepshark") or State.AutoArayaEnabled or State.AutoTwohEnabled or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or State.AutoYhwachEnabled or State.AutoTatsumakiEnabled or State.AutoIchigoEnabled or (State.AutoFishEnabled and movementOwner == "fishing")
 end
 
 function Extras.otherFarmActive()
-    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or State.AutoCoffinEnabled or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or State.AutoArayaEnabled or (State.AutoTwohEnabled and not (Extras.Twoh and Extras.Twoh.Idle)) or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or (State.AutoYhwachEnabled and not (Extras.Yhwach and Extras.Yhwach.Idle)) or State.AutoTatsumakiEnabled or State.AutoIchigoEnabled or false
+    return State.FarmLevelEnabled or State.FarmQuestEnabled or State.UnlockEnabled or State.BossFarmEnabled or (State.PrestigeEnabled and not Prestige.Idle) or State.AutoAmbushEnabled or State.AutoAmbushOnlyEnabled or State.AutoFireForceTrialEnabled or State.MobFarmEnabled or State.AutoArayaEnabled or (State.AutoTwohEnabled and not (Extras.Twoh and Extras.Twoh.Idle)) or State.AutoDungeonEnabled or State.AutoBankaiEnabled or State.AutoSolemnEnabled or (State.AutoYhwachEnabled and not (Extras.Yhwach and Extras.Yhwach.Idle)) or State.AutoTatsumakiEnabled or State.AutoIchigoEnabled or false
 end
 
 local movementOwnerActiveCheck = {
@@ -437,9 +435,6 @@ local movementOwnerActiveCheck = {
     end,
     whale = function()
         return State.AutoWhaleEnabled
-    end,
-    coffin = function()
-        return State.AutoCoffinEnabled
     end,
     ambush = function()
         return State.AutoAmbushEnabled
@@ -496,6 +491,10 @@ local function acquireMovement(ownerName)
         eventPriority = nil
     end
     if eventPriority == "yhwach" and not State.AutoYhwachEnabled then
+        Extras.PriorityRequest = nil
+        eventPriority = nil
+    end
+    if eventPriority == "whale" and (not (State.AutoWhaleEnabled and State.AutoFishEnabled) or (Extras.isBossFightingActive and Extras.isBossFightingActive())) then
         Extras.PriorityRequest = nil
         eventPriority = nil
     end
@@ -2293,6 +2292,23 @@ end
 
 Extras.PathfindingService = game:GetService("PathfindingService")
 
+function Extras.ensureSprint()
+    _G.Running = true
+    local char = localPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.WalkSpeed < 25 and char then
+        local runMod = char:FindFirstChild("ClientHandler") and char.ClientHandler:FindFirstChild("RUN_")
+        if runMod then
+            pcall(function()
+                local fn = require(runMod)
+                if type(fn) == "function" then
+                    fn()
+                end
+            end)
+        end
+    end
+end
+
 function Extras.computeWalkPath(fromPosition, targetPosition)
     local goal = targetPosition
     local downHit = workspaceService:Raycast(targetPosition + Vector3.new(0, 5, 0), Vector3.new(0, -300, 0), buildRaycastParams())
@@ -2325,6 +2341,7 @@ function Extras.computeWalkPath(fromPosition, targetPosition)
 end
 
 function Extras.followWaypoints(waypoints, flatDistance, shouldStop)
+    Extras.ensureSprint()
     for index, waypoint in ipairs(waypoints) do
         local rootPart, playerHumanoid = getRoot()
         if not rootPart or not playerHumanoid or playerHumanoid.Health <= 0 then
@@ -2332,14 +2349,18 @@ function Extras.followWaypoints(waypoints, flatDistance, shouldStop)
         end
         local waypointFlat = Vector3.new(waypoint.Position.X - rootPart.Position.X, 0, waypoint.Position.Z - rootPart.Position.Z).Magnitude
         if index > 1 or waypointFlat > 4 then
+            Extras.ensureSprint()
             if waypoint.Action == Enum.PathWaypointAction.Jump then
                 playerHumanoid.Jump = true
             end
             playerHumanoid:MoveTo(waypoint.Position)
-            local deadline = os.clock() + math.clamp(waypointFlat / 8, 3, 12)
+            local deadline = os.clock() + math.clamp(waypointFlat / 12, 2, 10)
             local lastJumpAt = os.clock()
+            local lastMoveAt = os.clock()
+            local lastSamplePos = rootPart.Position
+            local lastSampleTime = os.clock()
             while true do
-                task.wait(0.1)
+                task.wait(0.08)
                 rootPart, playerHumanoid = getRoot()
                 if not rootPart or not playerHumanoid or playerHumanoid.Health <= 0 then
                     return "stopped"
@@ -2353,17 +2374,31 @@ function Extras.followWaypoints(waypoints, flatDistance, shouldStop)
                 end
                 State.TravelStatus = string.format("Walking %d studs (safe travel)", math.floor(remaining))
                 local toWaypoint = Vector3.new(waypoint.Position.X - rootPart.Position.X, 0, waypoint.Position.Z - rootPart.Position.Z).Magnitude
-                if toWaypoint <= 4 then
+                if toWaypoint <= 4.5 then
                     break
                 end
-                if os.clock() > deadline then
+                local now = os.clock()
+                if now > deadline then
                     return "stuck"
                 end
-                if playerHumanoid:GetState() == Enum.HumanoidStateType.Swimming and os.clock() - lastJumpAt > 1 then
-                    lastJumpAt = os.clock()
+                if now - lastSampleTime >= 0.7 then
+                    local movedDist = Vector3.new(rootPart.Position.X - lastSamplePos.X, 0, rootPart.Position.Z - lastSamplePos.Z).Magnitude
+                    if movedDist < 1.2 then
+                        playerHumanoid.Jump = true
+                        playerHumanoid:MoveTo(waypoint.Position)
+                        lastMoveAt = now
+                    end
+                    lastSamplePos = rootPart.Position
+                    lastSampleTime = now
+                end
+                if playerHumanoid:GetState() == Enum.HumanoidStateType.Swimming and now - lastJumpAt > 1 then
+                    lastJumpAt = now
                     playerHumanoid.Jump = true
                 end
-                playerHumanoid:MoveTo(waypoint.Position)
+                if now - lastMoveAt >= 0.6 then
+                    lastMoveAt = now
+                    playerHumanoid:MoveTo(waypoint.Position)
+                end
             end
         end
     end
@@ -3880,7 +3915,7 @@ function Combat.updateRotation(character)
 end
 
 function Combat.tick()
-    if not isFarmActive() or pickupActive or (Extras.OverHeaven and Extras.OverHeaven.Busy) then
+    if not isFarmActive() or pickupActive or (Extras.OverHeaven and Extras.OverHeaven.Busy) or movementOwner == "whale" or movementOwner == "fishing" then
         return
     end
 
@@ -4082,7 +4117,7 @@ local function engageMob(targetMobName, isFarmingActiveCondition, allowBoss)
         lockedTargetCFrame = nil
         Combat.ApproachRoot = enemyRoot
         local function enemyStillValid()
-            return isFarmingActiveCondition() and enemyHumanoid.Health > 0 and enemyRoot.Parent ~= nil
+            return isFarmingActiveCondition() and enemyHumanoid.Health > 0 and enemyRoot.Parent ~= nil and Extras.PriorityRequest == nil
         end
         if (enemyTargetCFrame.Position - rootPart.Position).Magnitude > 400 then
             safeTravelTo(enemyTargetCFrame, function()
@@ -4102,7 +4137,7 @@ local function engageMob(targetMobName, isFarmingActiveCondition, allowBoss)
         end, enemyStillValid)
         Combat.ApproachRoot = nil
         rootPart = getRoot()
-        if not rootPart or enemyRoot.Parent == nil or enemyHumanoid.Health <= 0 then
+        if not rootPart or enemyRoot.Parent == nil or enemyHumanoid.Health <= 0 or Extras.PriorityRequest ~= nil then
             return
         end
     end
@@ -4248,20 +4283,25 @@ local function farmMobWithAnchor(mobName, isActiveCondition, allowBoss)
         local anchorPivot = anchor:GetPivot()
         local arrived = safeTravelTo(anchorPivot * CFrame.new(0, 0, 8), function()
             local currentRoot = getRoot()
-            return isActiveCondition() and currentRoot ~= nil and getTargetEnemy(mobName, currentRoot.Position, allowBoss) == nil
+            return isActiveCondition() and currentRoot ~= nil and getTargetEnemy(mobName, currentRoot.Position, allowBoss) == nil and Extras.PriorityRequest == nil
         end)
 
         if not arrived then
             local currentRoot = getRoot()
-            if not currentRoot or not getTargetEnemy(mobName, currentRoot.Position, allowBoss) then
-                setFarmStatus("Movement blocked while travelling to " .. mobName)
-                task.wait(2)
+            if not currentRoot or not getTargetEnemy(mobName, currentRoot.Position, allowBoss) or Extras.PriorityRequest ~= nil then
+                if Extras.PriorityRequest == nil then
+                    setFarmStatus("Movement blocked while travelling to " .. mobName)
+                end
+                task.wait(0.2)
                 return false
             end
         end
         task.wait(0.4)
     end
 
+    if Extras.PriorityRequest ~= nil then
+        return false
+    end
     engageMob(mobName, isActiveCondition, allowBoss)
     return true
 end
@@ -5291,7 +5331,7 @@ function Extras.buyBossTickets(amount)
 end
 
 function Extras.startLoop(flagName, cycle)
-    if State[flagName] then
+    if Extras.Threads[flagName] then
         return
     end
 
@@ -5305,6 +5345,7 @@ function Extras.startLoop(flagName, cycle)
             end
             task.wait(0.2)
         end
+        Extras.Threads[flagName] = nil
     end)
 end
 
@@ -5517,6 +5558,56 @@ function Extras.endWhaleEvent()
     end
 end
 
+function Extras.isYhwachSummonActive()
+    local isYhwachSelected = (State.BossFarmEnabled and (State.BossSelection["Yhwach (Summoned)"] == true or State.BossSelection["Yhwach Not Dungeon"] == true)) or State.AutoYhwachEnabled == true
+    if not isYhwachSelected then
+        return false
+    end
+    local yh = Extras.Yhwach
+    if yh then
+        local king = yh.findKing and yh.findKing()
+        if king then
+            return true
+        end
+        for _, name in ipairs(yh.Route or {}) do
+            if yh.findBoss and yh.findBoss(name) then
+                return true
+            end
+        end
+        local setKills = yh.setCount and yh.setCount() or 0
+        if setKills > 0 then
+            return true
+        end
+    end
+    local rootPart = getRoot()
+    local origin = rootPart and rootPart.Position or Vector3.zero
+    if getTargetEnemy("Yhwach Not Dungeon", origin, true) or getTargetEnemy("Yhwach", origin, true) then
+        return true
+    end
+    return false
+end
+
+function Extras.isBossFightingActive()
+    if Extras.isYhwachSummonActive() then
+        return true
+    end
+    if not State.BossFarmEnabled then
+        return false
+    end
+    if movementOwner == "boss" and (lockedEnemyRoot ~= nil or Combat.ApproachRoot ~= nil) then
+        return true
+    end
+    if BossFarm and BossFarm.getActiveTargets and BossFarm.isBossAlive then
+        local targets = BossFarm.getActiveTargets()
+        for _, bossName in ipairs(targets) do
+            if BossFarm.isBossAlive(bossName) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 function Extras.runWhaleCycle()
     local indicator = Extras.findWhaleIndicator()
     if not indicator or Extras.PriorityRequest == "pickupevent" then
@@ -5535,13 +5626,24 @@ function Extras.runWhaleCycle()
         return
     end
 
+    if Extras.isBossFightingActive() then
+        if Extras.PriorityRequest == "whale" then
+            Extras.PriorityRequest = nil
+        end
+        Extras.WhaleWaitSince = nil
+        State.ExtraStatus = "Whale: event active | finishing summoned boss first"
+        task.wait(1)
+        return
+    end
+
     if not Extras.PriorityRequest then
         Extras.PriorityRequest = "whale"
     end
     if not acquireMovement("whale") then
         Extras.WhaleWaitSince = Extras.WhaleWaitSince or os.clock()
-        if os.clock() - Extras.WhaleWaitSince > 8 and Extras.PriorityRequest ~= "twoh" then
+        if os.clock() - Extras.WhaleWaitSince > 1 and Extras.PriorityRequest ~= "twoh" and movementOwner ~= "dungeon" and not Extras.isBossFightingActive() then
             stopTween()
+            Extras.clearCombatLocks()
             movementOwner = nil
         end
         State.ExtraStatus = "Whale: whale spawned | taking over from " .. tostring(movementOwner)
@@ -5815,6 +5917,10 @@ function Extras.runFishingCycle()
     if State.AutoFishEnabled and not Extras.DeepsharkFishing and not twohThread then
         local whaleEvent = State.AutoWhaleEnabled and Extras.findWhaleIndicator() ~= nil
         local deepsharkBusy = State.AutoDeepsharkEnabled and (getInventoryAmount(Extras.DeepsharkBait) > 0 or Extras.getDeepsharkEnemy() ~= nil)
+        local bossBusy = Extras.isBossFightingActive()
+        if whaleEvent and bossBusy then
+            whaleEvent = false
+        end
         if whaleEvent and movementOwner ~= "whale" then
             if movementOwner == "fishing" then
                 Extras.releaseFishingSpot()
@@ -5823,11 +5929,11 @@ function Extras.runFishingCycle()
             task.wait(0.3)
             return
         end
-        if not whaleEvent and (deepsharkBusy or Extras.otherFarmActive()) then
+        if not whaleEvent and (deepsharkBusy or Extras.otherFarmActive() or bossBusy) then
             if movementOwner == "fishing" then
                 Extras.releaseFishingSpot()
             end
-            State.FishStatus = deepsharkBusy and "standing by | Ancient Deepshark is using Abyssal Bait" or (State.AutoWhaleEnabled and "standing by | another farm is on, fishing only during whale events" or "standing by | another farm is on (turn on Whale to fish at whale events)")
+            State.FishStatus = deepsharkBusy and "standing by | Ancient Deepshark is using Abyssal Bait" or (bossBusy and "standing by | finishing boss before heading to whale" or (State.AutoWhaleEnabled and "standing by | another farm is on, fishing only during whale events" or "standing by | another farm is on (turn on Whale to fish at whale events)"))
             task.wait(1)
             return
         end
@@ -5968,7 +6074,6 @@ function Extras.startFastFishing()
     fishing.AimPoint = nil
     fishing.StartedAt = os.clock()
     State.FishStatus = "starting"
-    State.AutoWhaleEnabled = true
     Extras.startLoop("AutoFishEnabled", Extras.runFishingCycle)
     Extras.startLoop("AutoWhaleEnabled", Extras.runWhaleCycle)
 end
@@ -6319,7 +6424,7 @@ Extras.Araya = {
         { "Time Safe Core", 15 }
     },
     TitleName = "The Pinky Nursefather",
-    HubLoader = 'if getgenv().HubAutoLoaded then return end getgenv().HubAutoLoaded = true if not game:IsLoaded() then game.Loaded:Wait() end local players = game:GetService("Players") while not players.LocalPlayer do task.wait() end players.LocalPlayer:WaitForChild("Data", 60) task.wait(2) loadstring(readfile("LEGACY PIECE/legacy_piece.luau"))()'
+    HubLoader = 'if getgenv().HubAutoLoaded then return end getgenv().HubAutoLoaded = true if not game:IsLoaded() then game.Loaded:Wait() end local players = game:GetService("Players") while not players.LocalPlayer do task.wait() end players.LocalPlayer:WaitForChild("Data", 60) task.wait(2) loadstring(readfile("LEGACY PIECE/legacy_piece.luau"))() getgenv().HubAutoLoaded = nil'
 }
 
 Extras.Araya.MaxTimeSafeLosses = math.huge
@@ -9466,7 +9571,8 @@ end
 function Extras.Yhwach.findKing()
     local wanted = normalizeName(Extras.Yhwach.KingName)
     for _, enemy in ipairs(enemiesFolder:GetChildren()) do
-        if normalizeName(stripBossTag(enemy.Name)) == wanted then
+        local norm = normalizeName(stripBossTag(enemy.Name))
+        if norm == wanted or string.find(norm, "yhwach", 1, true) ~= nil or string.find(norm, "quincyking", 1, true) ~= nil then
             local humanoid = enemy:FindFirstChildOfClass("Humanoid")
             if humanoid and humanoid.Health > 0 and enemy:FindFirstChild("HumanoidRootPart") then
                 return enemy
@@ -12169,10 +12275,6 @@ end
 Extras.StrangerName = "Mysterious Stranger"
 Extras.StrangerPosition = Vector3.new(2956, 66, -3174)
 
-function Extras.isAutoCoffinActive()
-    return State.AutoCoffinEnabled
-end
-
 function Extras.clearCombatLocks()
     lockedEnemyRoot = nil
     lockedTargetCFrame = nil
@@ -12379,7 +12481,7 @@ function Extras.flyLongTrip(targetSource, checkCondition)
 end
 
 function Extras.deliverCoffin(isActive)
-    isActive = isActive or Extras.isAutoCoffinActive
+    isActive = isActive or function() return true end
     local strangerPosition = Extras.getNPCWorldPosition(Extras.StrangerName, Extras.StrangerPosition)
     local rootPart = getRoot()
     if not rootPart then
@@ -12482,7 +12584,7 @@ function Extras.isCoffinAvailable()
 end
 
 function Extras.runCoffinStep(isActive)
-    isActive = isActive or Extras.isAutoCoffinActive
+    isActive = isActive or function() return true end
     if workspaceService:GetAttribute("Dungeon") ~= nil then
         return false
     end
@@ -12561,24 +12663,6 @@ function Extras.runCoffinStep(isActive)
     State.ExtraStatus = "Coffin: pickup failed | " .. tostring(State.LastNotifyText)
     task.wait(2)
     return false
-end
-
-function Extras.runCoffinCycle()
-    Extras.connectItemIndicators()
-    if not Extras.isCoffinAvailable() then
-        State.ExtraStatus = "Coffin: waiting for a coffin to surface"
-        task.wait(2)
-        return
-    end
-
-    if not acquireMovement("coffin") then
-        State.ExtraStatus = "Coffin: waiting for " .. tostring(movementOwner) .. " to finish"
-        task.wait(1)
-        return
-    end
-
-    Extras.runCoffinStep(Extras.isAutoCoffinActive)
-    releaseMovement("coffin")
 end
 
 Extras.Solemn = {
@@ -14231,7 +14315,6 @@ function Extras.stopAll()
     end
     Extras.DeepsharkFishing = false
     Extras.stopFishing()
-    Extras.stopLoop("AutoCoffinEnabled", "coffin")
     Extras.stopLoop("AutoAmbushEnabled", "ambush")
     Extras.stopLoop("AutoAmbushOnlyEnabled", "ambushonly")
     if getgenv().HubCoffinConnection then
@@ -16683,7 +16766,7 @@ function BossFarm.hookBossEvents()
         State.BossStatus = "Boss alert: " .. tostring(alert.Name or sourceName)
     end
 
-    for _, eventName in ipairs({ "GlobalBossEvent", "BossIndicatorSpawned", "BossAnnounce" }) do
+    for _, eventName in ipairs({ "BossIndicatorSpawned", "BossAnnounce" }) do
         local remoteEvent = eventsFolder:FindFirstChild(eventName)
         if remoteEvent and remoteEvent:IsA("RemoteEvent") then
             table.insert(bossEventConnections, remoteEvent.OnClientEvent:Connect(function(...)
@@ -16698,7 +16781,7 @@ function BossFarm.findTimedBoss()
     local origin = rootPart and rootPart.Position or Vector3.zero
 
     for _, bossName in ipairs(timedBossNames) do
-        local isSelected = State.BossSelection[bossName] or (bossName == "Yhwach" and State.BossSelection["Yhwach (Global Boss)"])
+        local isSelected = State.BossSelection[bossName]
         if isSelected then
             if bossName == "World Whale Event" then
                 if whaleFolder then
@@ -16886,15 +16969,10 @@ function BossFarm.stepSummonedYhwach(stopCondition)
     if not yh then
         return false
     end
-    if not State.AutoSummonBoss then
-        local king = yh.findKing()
-        if king then
-            yh.fightKing(king)
-            return true
-        end
-        setFarmStatus("Waiting for Yhwach (Summoned) to spawn (auto summon off)")
-        task.wait(2)
-        return false
+    local king = yh.findKing()
+    if king then
+        yh.fightKing(king)
+        return true
     end
     local blockReason = BossFarm.getQuincyBlockReason()
     if blockReason then
@@ -17343,18 +17421,18 @@ function BossFarm.runCycle()
         end
     end
 
-    if not State.AutoSummonBoss then
-        State.BossStatus = "Waiting for selected bosses to spawn (auto summon off)"
-        task.wait(3)
-        return
-    end
-
     if State.BossSelection["Yhwach (Summoned)"] or State.BossSelection["Yhwach Not Dungeon"] then
         if BossFarm.stepSummonedYhwach(function()
             return State.BossFarmEnabled
         end) then
             return
         end
+    end
+
+    if not State.AutoSummonBoss then
+        State.BossStatus = "Waiting for selected bosses to spawn (auto summon off)"
+        task.wait(3)
+        return
     end
 
     local now = os.clock()
@@ -17945,9 +18023,9 @@ function UIController.refreshStatus(includeHeavy)
                     local reishi = getInventoryAmount(yh and yh.ReishiItem or "Reishi Fragment")
                     table.insert(lines, string.format("Yhwach (Summoned) | Set: %d/5 statues | Reishi: %d", setKills, reishi))
                 end
-            elseif bossName == "Yhwach (Global Boss)" or bossName == "Yhwach" then
+            elseif bossName == "Yhwach" then
                 local alive = BossFarm.isBossAlive("Yhwach")
-                table.insert(lines, string.format("Yhwach (Global Boss) | %s", alive and "ALIVE (World Event)" or "waiting for event spawn"))
+                table.insert(lines, string.format("Yhwach | %s", alive and "ALIVE (World Event)" or "waiting for event spawn"))
             else
                 local catalogItem = BossFarm.getSummonEntry(bossName)
                 local aliveText = BossFarm.isBossAlive(bossName) and "alive" or "not spawned"
@@ -18967,9 +19045,6 @@ function UIController.Init()
             Callback = function()
                 State.BossSelection = {}
                 pcall(function()
-                    if UIController.YhwachGlobalToggle then
-                        UIController.YhwachGlobalToggle:UpdateState(false)
-                    end
                     if UIController.YhwachSummonToggle then
                         UIController.YhwachSummonToggle:UpdateState(false)
                     end
@@ -19019,21 +19094,38 @@ function UIController.Init()
         })
 
         bossLeft:Header({ Text = "Yhwach Bosses" })
-        UIController.YhwachGlobalToggle = bossLeft:Toggle({
-            Name = "Yhwach (Global Boss)",
-            Default = State.BossSelection["Yhwach (Global Boss)"] == true or State.BossSelection["Yhwach"] == true,
-            Callback = function(value)
-                State.BossSelection["Yhwach (Global Boss)"] = value or nil
-                State.BossSelection["Yhwach"] = value or nil
-            end
-        })
-
         UIController.YhwachSummonToggle = bossLeft:Toggle({
             Name = "Yhwach (Summoned - Auto 5 Statues)",
             Default = State.BossSelection["Yhwach (Summoned)"] == true or State.BossSelection["Yhwach Not Dungeon"] == true,
             Callback = function(value)
                 State.BossSelection["Yhwach (Summoned)"] = value or nil
-                State.BossSelection["Yhwach Not Dungeon"] = value or nil
+                State.BossSelection["Yhwach Not Dungeon"] = nil
+                if UIController.IsSyncingUI then
+                    return
+                end
+                if value then
+                    UIController.stopOthers("boss")
+                    if UIController.BossToggle and not State.BossFarmEnabled then
+                        UIController.BossToggle:UpdateState(true)
+                    elseif not State.BossFarmEnabled then
+                        BossFarm.Start()
+                    end
+                else
+                    local anyLeft = false
+                    for _, sel in pairs(State.BossSelection) do
+                        if sel then
+                            anyLeft = true
+                            break
+                        end
+                    end
+                    if not anyLeft and State.BossFarmEnabled then
+                        if UIController.BossToggle then
+                            UIController.BossToggle:UpdateState(false)
+                        else
+                            BossFarm.Stop()
+                        end
+                    end
+                end
             end
         })
 
@@ -19408,21 +19500,7 @@ function UIController.Init()
         end
     })
 
-    extrasRight:Header({ Text = "World Events" })
-
-    extrasRight:Toggle({
-        Name = "Auto Coffin Page (Mysterious Stranger)",
-        Default = false,
-        Callback = function(value)
-            if value then
-                Extras.watchCoffins()
-                Extras.startLoop("AutoCoffinEnabled", Extras.runCoffinCycle)
-            else
-                Extras.stopLoop("AutoCoffinEnabled", "coffin")
-                State.ExtraStatus = "Coffin: stopped"
-            end
-        end
-    })
+    extrasRight:Header({ Text = "Fire Force" })
 
     UIController.FireForceTrialToggle = extrasRight:Toggle({
         Name = "Auto Fire Force Trial (Captain Burns)",
@@ -19471,6 +19549,8 @@ function UIController.Init()
             end
         end
     })
+
+    extrasRight:Header({ Text = "Fast Mode" })
 
     UIController.FastModeToggle = extrasRight:Toggle({
         Name = "Fast Mode / Lag Reducer (Mobile)",
@@ -19536,6 +19616,8 @@ getgenv().HubDebug = {
     end
 }
 
+
+
 Extras.Session = {
     Path = Extras.SessionPath or "LEGACY PIECE/hub_session.json",
     LogPath = "LEGACY PIECE/LP_disconnects.txt",
@@ -19555,7 +19637,6 @@ Extras.Session = {
         { "PrestigeEnabled", "Auto Prestige" },
         { "AutoFishEnabled", "Auto Fish" },
         { "AutoDeepsharkEnabled", "Auto Ancient Deepshark (uses Abyssal Bait)" },
-        { "AutoCoffinEnabled", "Auto Coffin Page (Mysterious Stranger)" },
         { "AutoFireForceTrialEnabled", "Auto Fire Force Trial (Captain Burns)" },
         { "AutoAmbushOnlyEnabled", "Auto Ambush" },
         { "AutoAmbushEnabled", "Auto Fire Fighter Company" },
@@ -19841,11 +19922,11 @@ function Extras.connectAutoRejoin()
         session.Rejoining = true
         for attempt = 1, 40 do
             pcall(function()
-                queue_on_teleport(Extras.Araya.HubLoader)
+                queue_on_teleport(Extras.Araya.HubLoader or 'loadstring(readfile("LEGACY PIECE/legacy_piece.luau"))()')
             end)
             session.TeleportFailedAt = nil
-            session.writeLog(string.format("%s REJOIN attempt %d Teleport(%d)\n", os.date("%Y-%m-%d %X"), attempt, session.MainPlaceId))
             local firedAt = os.clock()
+            session.writeLog(string.format("%s REJOIN attempt %d Teleport(%d)\n", os.date("%Y-%m-%d %X"), attempt, session.MainPlaceId))
             pcall(function()
                 teleportService:Teleport(session.MainPlaceId, localPlayer)
             end)
